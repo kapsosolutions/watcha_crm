@@ -124,7 +124,7 @@ interface Details {
 export function DemoModal({ onClose }: { onClose: () => void }) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [d, setD] = useState<Details>({ name: '', businessName: '', email: '', category: '' });
-  const [phone, setPhone] = useState({ iso: 'IN', number: '' });
+  const [phone, setPhone] = useState({ iso: 'ZA', number: '' });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [cal, setCal] = useState<DemoCalendar | null>(null);

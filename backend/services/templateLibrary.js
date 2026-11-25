@@ -340,7 +340,7 @@ export async function useLibraryTemplate(business, input = {}) {
       buttonInputs.push({ index: i, type: 'URL', url: { base_url: url, ...(vars.length === 1 ? { url_suffix_example: suffix } : {}) } });
     } else if (b.type === 'PHONE_NUMBER') {
       const phone = str(v.phone, 30).replace(/[\s()-]/g, '');
-      if (!/^\+\d{7,15}$/.test(phone)) problems.push({ field: `buttonInputs.${i}.phone`, message: `“${label}” needs your phone number with the country code, like +919876543210.` });
+      if (!/^\+\d{7,15}$/.test(phone)) problems.push({ field: `buttonInputs.${i}.phone`, message: `“${label}” needs your phone number with the country code, like +27728932456.` });
       buttonInputs.push({ index: i, type: 'PHONE_NUMBER', phone_number: phone });
     } else if (b.type === 'OTP') {
       buttonInputs.push({ index: i, type: 'OTP', otp_type: 'COPY_CODE' });

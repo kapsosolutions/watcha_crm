@@ -1480,7 +1480,7 @@ export function TemplateComposerPage({
                         {t === 'PHONE_NUMBER' && (
                           <input
                             className="k-input"
-                            placeholder="+91 98765 43210"
+                            placeholder="+27 72 893 2456"
                             value={c.buttons[j]?.phone || ''}
                             onChange={(e) => updateCardButton(i, j, { phone: e.target.value })}
                             aria-label={`Card ${i + 1} button ${j + 1} phone`}
@@ -1573,7 +1573,7 @@ export function TemplateComposerPage({
                     {b.type === 'PHONE_NUMBER' && (
                       <input
                         className="k-input"
-                        placeholder="+91 98765 43210"
+                        placeholder="+27 72 893 2456"
                         value={b.phone}
                         onChange={(e) => updateButton(i, { phone: e.target.value })}
                       />

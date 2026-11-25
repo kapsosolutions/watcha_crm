@@ -8,6 +8,17 @@ export function FlagSvg({
   preserveAspectRatio?: string;
 }) {
   switch ((iso || '').toUpperCase()) {
+    case 'ZA':
+      return (
+        <svg viewBox="0 0 640 480" preserveAspectRatio={preserveAspectRatio} className="lp-flag-svg" aria-hidden="true">
+          <path fill="#E03C31" d="M0 0h640v240H0z" />
+          <path fill="#001489" d="M0 240h640v240H0z" />
+          <path fill="#FFFFFF" d="M0 0h128l202 160h310v160H330L128 480H0z" />
+          <path fill="#007749" d="M0 0h96l224 184h320v112H320L96 480H0z" />
+          <path fill="#FFB81C" d="M0 56l230 184L0 424z" />
+          <path fill="#000000" d="M0 96l180 144L0 384z" />
+        </svg>
+      );
     case 'IN':
       return (
         <svg viewBox="0 0 640 480" preserveAspectRatio={preserveAspectRatio} className="lp-flag-svg" aria-hidden="true">
@@ -187,9 +198,9 @@ export function FlagSvg({
   }
 }
 
-/** Dialling codes offered in the phone field. India first; all world countries A–Z. */
+/** Dialling codes offered in the phone field. South Africa first; all world countries A–Z. */
 export const COUNTRIES: { iso: string; dial: string; name: string; len?: number }[] = [
-  { iso: 'IN', dial: '91', name: 'India', len: 10 },
+  { iso: 'ZA', dial: '27', name: 'South Africa', len: 9 },
   { iso: 'AF', dial: '93', name: 'Afghanistan', len: 9 },
   { iso: 'AL', dial: '355', name: 'Albania', len: 9 },
   { iso: 'DZ', dial: '213', name: 'Algeria', len: 9 },
@@ -286,6 +297,7 @@ export const COUNTRIES: { iso: string; dial: string; name: string; len?: number 
   { iso: 'HK', dial: '852', name: 'Hong Kong', len: 8 },
   { iso: 'HU', dial: '36', name: 'Hungary', len: 9 },
   { iso: 'IS', dial: '354', name: 'Iceland', len: 7 },
+  { iso: 'IN', dial: '91', name: 'India', len: 10 },
   { iso: 'ID', dial: '62', name: 'Indonesia' },
   { iso: 'IR', dial: '98', name: 'Iran', len: 10 },
   { iso: 'IQ', dial: '964', name: 'Iraq', len: 10 },
@@ -388,7 +400,6 @@ export const COUNTRIES: { iso: string; dial: string; name: string; len?: number 
   { iso: 'SI', dial: '386', name: 'Slovenia', len: 8 },
   { iso: 'SB', dial: '677', name: 'Solomon Islands', len: 7 },
   { iso: 'SO', dial: '252', name: 'Somalia', len: 8 },
-  { iso: 'ZA', dial: '27', name: 'South Africa', len: 9 },
   { iso: 'KR', dial: '82', name: 'South Korea', len: 10 },
   { iso: 'SS', dial: '211', name: 'South Sudan', len: 9 },
   { iso: 'ES', dial: '34', name: 'Spain', len: 9 },

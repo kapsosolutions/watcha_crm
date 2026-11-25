@@ -367,7 +367,7 @@ export function RegisterPage({ google = false, onSignedIn }: { google?: boolean;
   const googleProblem = useGoogleError();
   const [error, setError] = useState(googleProblem);
   const [busy, setBusy] = useState(false);
-  const [phone, setPhone] = useState({ iso: 'IN', number: '' });
+  const [phone, setPhone] = useState({ iso: 'ZA', number: '' });
   const onPhone = (iso: string, number: string) => {
     setPhone({ iso, number });
     setForm((f) => ({ ...f, phone: fullPhone(iso, number) }));

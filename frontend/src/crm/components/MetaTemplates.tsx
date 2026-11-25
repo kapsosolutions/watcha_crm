@@ -683,7 +683,7 @@ export function UtilityCreateModal({ api, onClose, onCreated, seed }: {
                   {b.type === 'URL' ? (
                     <input className="k-input" placeholder="https://… (end with {{1}} for a per-message part)" value={b.url} onChange={(e) => setBtn(i, { url: e.target.value })} aria-label={`Button ${i + 1} link`} />
                   ) : (
-                    <input className="k-input" placeholder="+919876543210" value={b.phone} onChange={(e) => setBtn(i, { phone: e.target.value })} aria-label={`Button ${i + 1} phone`} />
+                    <input className="k-input" placeholder="+27728932456" value={b.phone} onChange={(e) => setBtn(i, { phone: e.target.value })} aria-label={`Button ${i + 1} phone`} />
                   )}
                   <button type="button" className="icon-btn" onClick={() => set({ buttons: v.buttons.filter((_, j) => j !== i) })} aria-label={`Remove button ${i + 1}`}>
                     <span className="material-icons">delete_outline</span>
@@ -833,7 +833,7 @@ function LibraryModal({ api, onClose, onCloned }: { api: CrmApi; onClose: () => 
                 <input
                   className="k-input"
                   value={(b.type === 'URL' ? inputs[i]?.url : inputs[i]?.phone) || ''}
-                  placeholder={b.type === 'URL' ? 'https://yourshop.example/orders' : '+919876543210'}
+                  placeholder={b.type === 'URL' ? 'https://yourshop.example/orders' : '+27728932456'}
                   onChange={(e) => setInputs(inputs.map((x, j) => (j === i ? (b.type === 'URL' ? { url: e.target.value } : { phone: e.target.value }) : x)))}
                   data-testid={`ut-clone-input-${i}`}
                 />

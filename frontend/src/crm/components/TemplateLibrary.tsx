@@ -474,7 +474,7 @@ function UseDialog({
                           id={`tlb-use-input-${i}`}
                           className="k-input"
                           value={(isUrl ? v.url : v.phone) || ''}
-                          placeholder={isUrl ? 'https://yourshop.example/orders' : '+919876543210'}
+                          placeholder={isUrl ? 'https://yourshop.example/orders' : '+27728932456'}
                           onChange={(e) => set(isUrl ? { url: e.target.value } : { phone: e.target.value })}
                           data-testid={`tlb-use-input-${i}`}
                         />

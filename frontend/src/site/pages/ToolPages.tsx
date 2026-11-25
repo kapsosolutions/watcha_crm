@@ -12,11 +12,11 @@ import { NotFoundPage } from './NotFoundPage';
 
 // ------------------------------------------------------------- helpers
 
-/** Digits of a WhatsApp number; a 10-digit Indian mobile gets +91. */
+/** Digits of a WhatsApp number; a South African mobile (9 digits or 10 starting with 0) gets +27. */
 function waDigits(raw: string): string {
-  let d = raw.replace(/\D/g, '');
-  if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
-  if (d.length === 10 && /^[6-9]/.test(d)) d = `91${d}`;
+  const d = raw.replace(/\D/g, '');
+  if (d.length === 10 && d.startsWith('0')) return `27${d.slice(1)}`;
+  if (d.length === 9 && /^[6-8]/.test(d)) return `27${d}`;
   return d;
 }
 const validWa = (d: string) => /^\d{8,15}$/.test(d);
@@ -45,8 +45,8 @@ function PhoneInput({ value, onChange, digits }: { value: string; onChange: (v: 
   return (
     <div className="sx-field">
       <label htmlFor="tool-phone">Your WhatsApp number</label>
-      <input id="tool-phone" type="tel" inputMode="tel" placeholder="+91 98765 43210" value={value} onChange={(e) => onChange(e.target.value)} aria-invalid={bad} data-testid="tool-phone" />
-      {bad ? <div className="sx-field-err">Enter the number with its country code, e.g. +91 98765 43210.</div> : <div className="sx-note">With country code. A 10-digit Indian mobile number gets +91 added.</div>}
+      <input id="tool-phone" type="tel" inputMode="tel" placeholder="+27 72 893 2456" value={value} onChange={(e) => onChange(e.target.value)} aria-invalid={bad} data-testid="tool-phone" />
+      {bad ? <div className="sx-field-err">Enter the number with its country code, e.g. +27 72 893 2456.</div> : <div className="sx-note">With country code. A South African mobile number (e.g. 072 893 2456) gets +27 added.</div>}
     </div>
   );
 }

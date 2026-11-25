@@ -36,8 +36,8 @@ const BLANK_PAY: PaymentSettings = {
   city: '',
   zoneCode: '',
   postalCode: '',
-  countryCode: 'IN',
-  countryOfOrigin: 'India',
+  countryCode: 'ZA',
+  countryOfOrigin: 'South Africa',
 };
 
 function Text({

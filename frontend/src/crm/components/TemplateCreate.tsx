@@ -245,7 +245,7 @@ export function TemplateCreate({ api, onCreated }: Props) {
             {b.type === 'PHONE_NUMBER' && (
               <input
                 className="k-input"
-                placeholder="+91 98765 43210"
+                placeholder="+27 72 893 2456"
                 value={b.phone}
                 onChange={(e) => updateButton(i, { phone: e.target.value })}
               />

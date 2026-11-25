@@ -72,6 +72,7 @@ export function ContactPage() {
         name={k}
         type={type}
         autoComplete={auto || undefined}
+        placeholder={k === 'phone' ? '+27 72 893 2456' : undefined}
         value={form[k]}
         onChange={(e) => set(k)(e.target.value)}
         aria-invalid={!!errors[k]}

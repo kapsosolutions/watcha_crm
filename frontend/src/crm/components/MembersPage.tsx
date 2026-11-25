@@ -923,7 +923,7 @@ function MemberEditor({
             <div className="mem-row">
               <div className="k-field">
                 <label className="k-label">Phone</label>
-                <input className="k-input" value={form.phone || ''} onChange={(e) => set({ phone: e.target.value })} placeholder="+91 98765 43210" />
+                <input className="k-input" value={form.phone || ''} onChange={(e) => set({ phone: e.target.value })} placeholder="+27 72 893 2456" />
               </div>
               {v.has('email') && (
                 <div className="k-field">

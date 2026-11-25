@@ -173,8 +173,8 @@ export const BLANK_PAYMENT: PaymentForm = {
   city: '',
   zoneCode: '',
   postalCode: '',
-  countryCode: 'IN',
-  countryOfOrigin: 'India',
+  countryCode: 'ZA',
+  countryOfOrigin: 'South Africa',
 };
 
 /**

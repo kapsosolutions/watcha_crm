@@ -187,7 +187,7 @@ export function utilityProblems(v: UtilityTemplateInput): FieldProblem[] {
       if (ps.length > 1 || (ps.length === 1 && !/\{\{\s*1\s*\}\}$/.test(b.url.trim()))) out.push({ field: `${f}.url`, message: `Button ${i + 1}: a link can have one {{1}}, at the very end.` });
       if (ps.length === 1 && !isHttpUrl(b.urlExample.trim())) out.push({ field: `${f}.urlExample`, message: `Button ${i + 1}: add a full sample link for the {{1}} part.` });
     } else if (!/^\+\d{7,15}$/.test(b.phone.replace(/[\s()-]/g, ''))) {
-      out.push({ field: `${f}.phone`, message: `Button ${i + 1}: the phone number needs the country code, like +919876543210.` });
+      out.push({ field: `${f}.phone`, message: `Button ${i + 1}: the phone number needs the country code, like +27728932456.` });
     }
   });
   return out;

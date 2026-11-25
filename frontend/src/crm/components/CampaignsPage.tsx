@@ -322,7 +322,7 @@ export function CampaignsPage({ api, business, demo, onNavigate, focusRequest, s
   }
 
   const [showDirectAdd, setShowDirectAdd] = useState(true);
-  const [directIso, setDirectIso] = useState('IN');
+  const [directIso, setDirectIso] = useState('ZA');
   const [directPhone, setDirectPhone] = useState('');
   const [directName, setDirectName] = useState('');
   const [directError, setDirectError] = useState('');

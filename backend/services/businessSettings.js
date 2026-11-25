@@ -20,8 +20,8 @@ export const pickPayment = (p = {}) => {
     city: s(p.city),
     zoneCode: s(p.zoneCode).toUpperCase(),
     postalCode: s(p.postalCode),
-    countryCode: s(p.countryCode, 'IN').toUpperCase() || 'IN',
-    countryOfOrigin: s(p.countryOfOrigin, 'India') || 'India',
+    countryCode: s(p.countryCode, 'ZA').toUpperCase() || 'ZA',
+    countryOfOrigin: s(p.countryOfOrigin, 'South Africa') || 'South Africa',
   };
 };
 

@@ -453,7 +453,7 @@ export function validateUtilityTemplate(input = {}) {
       }
       if (params.length === 1 && !isHttpUrl(b.urlExample)) p.add(`${f}.urlExample`, `Button ${i + 1}: add a full sample link for the {{1}} part.`);
     } else if (!/^\+\d{7,15}$/.test(b.phone)) {
-      p.add(`${f}.phone`, `Button ${i + 1}: the phone number needs the country code, like +919876543210.`);
+      p.add(`${f}.phone`, `Button ${i + 1}: the phone number needs the country code, like +27728932456.`);
     }
   });
   if (!p.ok) throw new InvalidInput(p.list);

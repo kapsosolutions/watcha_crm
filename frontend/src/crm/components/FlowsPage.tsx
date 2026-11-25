@@ -916,7 +916,7 @@ function NodeFields({ id, data }: { id: string; data: WaData }) {
       {data.kind === 'call' && (
         <div className="fl-fields">
           <input value={data.callText || ''} onChange={(e) => patch({ callText: e.target.value })} placeholder="Button text" maxLength={titleMax} />
-          <input value={data.callPhone || ''} onChange={(e) => patch({ callPhone: e.target.value })} placeholder="+91 98765 43210" />
+          <input value={data.callPhone || ''} onChange={(e) => patch({ callPhone: e.target.value })} placeholder="+27 72 893 2456" />
         </div>
       )}
 

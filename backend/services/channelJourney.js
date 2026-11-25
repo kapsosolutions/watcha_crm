@@ -93,7 +93,7 @@ export function channelJourneyProblems(channel, nodes = []) {
     }
     if (kind === 'call') {
       if (!String(d.callText || '').trim() || String(d.callText).length > L.buttonTitle) add(n, 'callText', `Give the call button a title of up to ${L.buttonTitle} characters.`);
-      if (!/^\+\d{6,15}$/.test(String(d.callPhone || '').replace(/[\s()-]/g, ''))) add(n, 'callPhone', 'Write the phone number with the country code, e.g. +91 98765 43210.');
+      if (!/^\+\d{6,15}$/.test(String(d.callPhone || '').replace(/[\s()-]/g, ''))) add(n, 'callPhone', 'Write the phone number with the country code, e.g. +27 72 893 2456.');
     }
     if (kind === 'carousel') {
       const cards = d.cards || [];

@@ -303,7 +303,7 @@ function extractNationalDigits(digits: string, dial: string, rule: CountryValida
 }
 
 function AddContactModal({ isOpen, onClose, onAdd }: AddContactModalProps) {
-  const [selectedIso, setSelectedIso] = useState('IN');
+  const [selectedIso, setSelectedIso] = useState('ZA');
   const [mobileNumber, setMobileNumber] = useState('');
   const [contactName, setContactName] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);

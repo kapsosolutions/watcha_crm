@@ -54,8 +54,8 @@ const editFrom = (b: Business): MetaEdit => ({
     city: b.payment?.city || '',
     zoneCode: b.payment?.zoneCode || '',
     postalCode: b.payment?.postalCode || '',
-    countryCode: b.payment?.countryCode || 'IN',
-    countryOfOrigin: b.payment?.countryOfOrigin || 'India',
+    countryCode: b.payment?.countryCode || 'ZA',
+    countryOfOrigin: b.payment?.countryOfOrigin || 'South Africa',
   },
 });
 

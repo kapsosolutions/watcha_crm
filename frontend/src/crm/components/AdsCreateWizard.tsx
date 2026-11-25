@@ -1249,7 +1249,7 @@ function StepAdSet({
   };
 
   // WhatsApp numbers linked to this Page
-  const waNumber = page?.whatsapp.number || '+91 79899 09361';
+  const waNumber = page?.whatsapp.number || '+27 72 893 2456';
 
   return (
     <>
@@ -1558,7 +1558,7 @@ function StepAdSet({
               <input
                 type="tel"
                 value={spec.creative.displayLink}
-                placeholder="+91 9876543210"
+                placeholder="+27 72 893 2456"
                 onChange={(e) => setSpec((s) => ({ ...s, creative: { ...s.creative, displayLink: e.target.value } }))}
                 data-testid="ads-wz-calls-phone"
               />

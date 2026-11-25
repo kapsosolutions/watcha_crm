@@ -106,8 +106,8 @@ const BusinessSchema = new Schema(
       city: { type: String, default: '' },
       zoneCode: { type: String, default: '' }, // 2-letter state code, e.g. TG
       postalCode: { type: String, default: '' },
-      countryCode: { type: String, default: 'IN' },
-      countryOfOrigin: { type: String, default: 'India' },
+      countryCode: { type: String, default: 'ZA' },
+      countryOfOrigin: { type: String, default: 'South Africa' },
     },
 
     // ----- Snapshot of details fetched from Graph at verification time -----

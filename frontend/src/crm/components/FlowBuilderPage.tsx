@@ -2800,7 +2800,7 @@ function BlockFields({
       {b.kind === 'call' && (
         <div className="fl-fields">
           <input className="nodrag" value={b.callLabel || ''} onChange={(e) => patch({ callLabel: e.target.value })} placeholder="Button text" />
-          <input className="nodrag" value={b.callPhone || ''} onChange={(e) => patch({ callPhone: e.target.value })} placeholder="+91 98765 43210" />
+          <input className="nodrag" value={b.callPhone || ''} onChange={(e) => patch({ callPhone: e.target.value })} placeholder="+27 72 893 2456" />
           <div className="fl-call-cta" title="Shown in chat as a call button">
             <span className="material-icons">call</span>
             <span>{b.callLabel || 'Call'}</span>
@@ -3072,7 +3072,7 @@ function blockSummary(b: FlowBlock): string {
     case 'reply':
     case 'paymethod': return `${media ? `${media} · ` : ''}${nOf((b.buttons || []).length, 'button', 'buttons')}`;
     case 'cta': return [b.ctaLabel || 'Button', b.ctaUrl && b.ctaUrl !== 'https://' ? b.ctaUrl : 'link not set'].join(' → ');
-    case 'call': return [b.callLabel || 'Call', b.callPhone && b.callPhone !== '+91' ? b.callPhone : 'number not set'].join(' · ');
+    case 'call': return [b.callLabel || 'Call', b.callPhone && b.callPhone !== '+27' && b.callPhone !== '+91' ? b.callPhone : 'number not set'].join(' · ');
     case 'location': return 'Asks for a location';
     case 'list': return `${b.listTitle || 'Menu'} · ${nOf((b.options || []).length, 'option', 'options')}`;
     case 'template': return b.templateName || 'Template not chosen';
@@ -3088,7 +3088,7 @@ function blockProblem(b: FlowBlock): string {
   if (b.kind === 'message' && !text && !(b.header && b.header !== 'none' && b.headerMediaUrl)) return 'Add a message or a file';
   if ((b.kind === 'reply' || b.kind === 'list') && !text) return 'Add the message text';
   if (b.kind === 'cta' && (!b.ctaUrl || b.ctaUrl === 'https://')) return 'Add the link';
-  if (b.kind === 'call' && (!b.callPhone || b.callPhone === '+91')) return 'Add the phone number';
+  if (b.kind === 'call' && (!b.callPhone || b.callPhone === '+27' || b.callPhone === '+91')) return 'Add the phone number';
   if (b.kind === 'template' && !b.templateName) return 'Choose a template';
   return '';
 }
@@ -4495,7 +4495,7 @@ function PhonePreview({ screen }: { screen?: FlowScreen }) {
                   <div className="fpp-field-label">{c.label}{c.required ? ' *' : ''}</div>
                   {c.prefill === 'phone' ? (
                     <div className={`fpp-textbox${c.locked ? ' locked' : ''}`}>
-                      +91 98765 43210
+                      +27 72 893 2456
                       {c.locked && <span className="material-icons">lock</span>}
                     </div>
                   ) : (

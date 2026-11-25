@@ -95,7 +95,7 @@ export function TemplateApiDialog({
           title: '1. Send a one-time code',
           note: 'We make a 6-digit code, send it with this template and remember it (hashed) until it expires. Send your own with "code".',
           url: `${origin}/api/v1/otp/send`,
-          body: { to: '+919876543210', template: template.name },
+          body: { to: '+27728932456', template: template.name },
           response: { id: 'wamid.HBgM…', to: '919876543210', template: template.name, status: 'accepted', expiresAt: '2026-11-05T10:15:00.000Z' },
           idempotent: true,
         },
@@ -103,7 +103,7 @@ export function TemplateApiDialog({
           title: '2. Check the code your user typed',
           note: 'Valid once. Five wrong tries, or the expiry, and they need a new code.',
           url: `${origin}/api/v1/otp/verify`,
-          body: { to: '+919876543210', code: '482913' },
+          body: { to: '+27728932456', code: '482913' },
           response: { valid: true },
           idempotent: false,
         },
@@ -111,7 +111,7 @@ export function TemplateApiDialog({
     }
     const n = templateVarCount(template);
     const hf = headerFormat(template);
-    const body: Record<string, unknown> = { to: '+919876543210', template: template.name };
+    const body: Record<string, unknown> = { to: '+27728932456', template: template.name };
     if (n) body.variables = Array.from({ length: n }, (_, i) => `value ${i + 1}`);
     if (['image', 'video', 'document'].includes(hf)) body.headerMediaUrl = `https://example.com/your-${hf === 'document' ? 'file.pdf' : hf === 'video' ? 'clip.mp4' : 'photo.jpg'}`;
     if (template.kind === 'lto') {

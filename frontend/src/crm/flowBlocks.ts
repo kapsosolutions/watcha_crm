@@ -50,7 +50,7 @@ export function makeBlock(spec: BlockSpec, wording: ConfirmWording = DEFAULT_CON
     case 'call':
       b.text = 'Call us';
       b.callLabel = 'Call';
-      b.callPhone = '+91';
+      b.callPhone = '+27';
       break;
     case 'location':
       b.text = 'Please share your location.';

@@ -77,7 +77,7 @@ export const LINK_INFO: Record<LinkKind, {
   },
   call: {
     title: 'Call us', icon: 'call', color: '#f59e0b',
-    valueLabel: 'Phone number', placeholder: '+91 98765 43210',
+    valueLabel: 'Phone number', placeholder: '+27 72 893 2456',
     hint: 'With the country code. The customer’s phone dials it when they tap the button.',
     defaults: { text: 'Call us and we’ll help right away.', label: 'Call now', value: '' },
   },
@@ -104,7 +104,7 @@ export function linkProblem(kind: LinkKind, d?: Partial<LinkDetails>): string {
   if (kind === 'call') {
     const digits = value.replace(/\D/g, '');
     if (!value) return 'Add the phone number.';
-    if (!/^\+?[\d\s()-]+$/.test(value) || digits.length < 8 || digits.length > 15) return 'Enter a phone number with its country code, e.g. +91 98765 43210.';
+    if (!/^\+?[\d\s()-]+$/.test(value) || digits.length < 8 || digits.length > 15) return 'Enter a phone number with its country code, e.g. +27 72 893 2456.';
     return '';
   }
   if (!value) return kind === 'location' ? 'Add your Google Maps link.' : kind === 'website' ? 'Add your website link.' : 'Add the brochure link.';
