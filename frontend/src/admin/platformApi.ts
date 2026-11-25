@@ -3,7 +3,9 @@ import { defaultConfig } from '../crm/config';
 import type { PlanState } from '../crm/types';
 import type { EventTheme } from '../event/liveEvent';
 
-const API = import.meta.env.VITE_API_BASE ?? defaultConfig.apiBase;
+const API = (import.meta.env.VITE_API_BASE && import.meta.env.VITE_API_BASE.trim() !== '')
+  ? import.meta.env.VITE_API_BASE
+  : defaultConfig.apiBase;
 
 export const ADMIN_TOKEN_KEY = 'crm_admin_jwt';
 export const BUSINESS_TOKEN_KEY = 'crm_business_jwt';
