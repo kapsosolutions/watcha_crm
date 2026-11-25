@@ -102,7 +102,7 @@ export async function adminCredentialsMatch(username, password) {
   }
   if (!passOk) {
     const plain = process.env.SUPER_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '';
-    passOk = (Boolean(plain) && safeEqual(rawPass, plain)) || safeEqual(rawPass, 'Whatcha2026') || safeEqual(rawPass, 'Watcha@2026');
+    passOk = Boolean(plain) && safeEqual(rawPass, plain);
   }
   return userOk && passOk;
 }

@@ -28,7 +28,7 @@ import { useCrmTheme, ThemeToggleSvg, type CrmTheme } from '../theme';
 import { useCrmScale } from '../uiScale';
 import { ProfileSidebarDrawer } from './ProfileSidebarDrawer';
 import { NotificationDrawer } from './NotificationDrawer';
-import { OtherAppsDialog, useEmbeddedSignup } from './ConnectWhatsApp';
+import { OtherAppsDialog, ManualConnectModal } from './ConnectWhatsApp';
 import { verticalConfig, type LabelOverrides } from '../verticals';
 import { CrmApp } from './CrmApp';
 import { TemplatesPage, type TemplatesTab } from './TemplatesPage';
@@ -1394,7 +1394,9 @@ export function CrmShell({ config, demo = false, onLogout }: Props) {
     },
     [loadMe],
   );
-  const addWaAccountSignup = useEmbeddedSignup(api, onConnected, business);
+  // Connect / add a WhatsApp number: the same credentials popup as Channel
+  // Status (Phone Number ID, WABA ID, App ID/Secret, access token).
+  const [waConnectOpen, setWaConnectOpen] = useState(false);
 
   // Switch active BM / WhatsApp Business account in-place without reloading the page.
   const handleSwitchAccount = useCallback(
@@ -1575,7 +1577,7 @@ export function CrmShell({ config, demo = false, onLogout }: Props) {
                 accountKnown={meKnown}
                 businessName={business?.name || (business?.ownerFirstName ? `${business.ownerFirstName} ${business.ownerLastName || ''}`.trim() : '')}
                 businessAvatar={business?.profilePicture || business?.avatarUrl || business?.meta?.profilePictureUrl || ''}
-                onConnectClick={() => addWaAccountSignup.connect()}
+                onConnectClick={() => setWaConnectOpen(true)}
                 onOpenTemplatesPage={() => navigate('templates')}
                 onOpenTemplateCreate={handleOpenTemplateCreate}
                 channelTab={chatChannel}
@@ -1586,7 +1588,7 @@ export function CrmShell({ config, demo = false, onLogout }: Props) {
                 switchingAccount={switchingAccount}
                 switchingToName={switchingToName}
                 onSwitchAccount={handleSwitchAccount}
-                onAddAccount={() => addWaAccountSignup.connect()}
+                onAddAccount={() => setWaConnectOpen(true)}
                 onDisconnectAccount={handleDisconnectAccount}
                 onNavigate={pageNavigate}
                 onMetaChannelsConnected={(info) => {
@@ -1813,6 +1815,15 @@ export function CrmShell({ config, demo = false, onLogout }: Props) {
       )}
       {showDemoModal && <DemoModal onClose={() => setShowDemoModal(false)} />}
       {!demo && <OtherAppsDialog api={api} business={business} onConnected={onConnected} />}
+      {!demo && (
+        <ManualConnectModal
+          isOpen={waConnectOpen}
+          onClose={() => setWaConnectOpen(false)}
+          api={api}
+          business={business}
+          onConnected={onConnected}
+        />
+      )}
       <NotificationDrawer
         isOpen={notificationsOpen}
         onClose={closeNotifications}

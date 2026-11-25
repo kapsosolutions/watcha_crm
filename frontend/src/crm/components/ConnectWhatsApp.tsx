@@ -362,7 +362,7 @@ export function OtherAppsDialog({
   const confirm = useConfirm();
   const [detail, setDetail] = useState<OtherAppsDetail | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
-  const signup = useEmbeddedSignup(api, onConnected, business);
+  const [manualOpen, setManualOpen] = useState(false);
 
   useEffect(() => {
     const onEvent = (e: Event) => setDetail((e as CustomEvent<OtherAppsDetail>).detail || null);
@@ -380,14 +380,22 @@ export function OtherAppsDialog({
     return () => document.removeEventListener('keydown', onKey);
   }, [detail, close]);
 
-  if (!detail) return null;
+  const manualModal = (
+    <ManualConnectModal
+      isOpen={manualOpen}
+      onClose={() => setManualOpen(false)}
+      api={api}
+      business={business}
+      onConnected={onConnected}
+    />
+  );
+  if (!detail) return manualOpen ? manualModal : null;
   const names = detail.apps.map((a) => `${a.name || 'App'} (ID ${a.id})`).join(', ');
 
-  // Meta's popup must open from the click itself, so this calls connect()
-  // directly; picking another number replaces this one.
+  // Picking another number: enter that number's credentials in the popup.
   const pickDifferent = () => {
     close();
-    signup.connect();
+    setManualOpen(true);
   };
   const disconnect = async () => {
     const ok = await confirm({
@@ -443,7 +451,7 @@ export function OtherAppsDialog({
             type="button"
             className="disc-discard"
             onClick={pickDifferent}
-            disabled={signup.busy || signup.preparing || disconnecting}
+            disabled={disconnecting}
             data-testid="cw-other-different"
           >
             Use a different number
