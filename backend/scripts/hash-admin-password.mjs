@@ -11,8 +11,8 @@ import { hashAdminPassword } from '../services/auth.js';
 
 const given = process.argv[2];
 const password = given || crypto.randomBytes(18).toString('base64url');
-if (password.length < 12) {
-  console.error('Use at least 12 characters.');
+if (password.length < 8) {
+  console.error('Use at least 8 characters.');
   process.exit(1);
 }
 const hash = await hashAdminPassword(password);
