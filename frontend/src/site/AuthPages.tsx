@@ -303,6 +303,9 @@ export function LoginPage({ onSignedIn }: { onSignedIn: (token: string) => void 
         <Field label="Password" value={password} onChange={setPassword} type="password" autoComplete="current-password" />
         <div className="au-switch-link">
           New here? <a href="#/register">Create an account</a>
+          <span style={{ display: 'block', marginTop: '6px' }}>
+            Platform manager? <a href="#/admin">Admin Sign In &rarr;</a>
+          </span>
         </div>
         <button className="au-submit" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
       </form>

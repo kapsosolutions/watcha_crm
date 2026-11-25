@@ -271,6 +271,12 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ success: false, message: 'Enter your email and password' });
   }
   const INVALID = { success: false, message: 'Invalid email or password' };
+  if (identifier.trim().toLowerCase() === 'admin' || identifier.trim().toLowerCase() === adminUsername().toLowerCase()) {
+    return res.status(401).json({
+      success: false,
+      message: 'Admin account detected. Please use the Admin Sign In page at #/admin',
+    });
+  }
   // Per IP, plus a lock on the account after repeated wrong passwords.
   const account = identifier.toLowerCase();
   if (refuse(res, checkAttempt('login', { ip: req.ip, account }))) return undefined;
