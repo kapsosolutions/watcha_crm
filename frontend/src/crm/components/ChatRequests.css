@@ -1,0 +1,666 @@
+/* =============================================================================
+   ChatRequests Styles — Customer Requests & Status Updates inside Chat Thread
+   ========================================================================== */
+
+/* ---- 1. Header quick pill button ---- */
+.chat-req-header-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1e293b;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  transition: all 0.15s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.chat-req-header-pill:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+}
+
+.cr-pill-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.cr-pill-label {
+  font-weight: 600;
+}
+
+.cr-pill-badge {
+  background: #00a884;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 10px;
+}
+
+.cr-pill-chev {
+  font-size: 16px;
+  color: #64748b;
+  margin-left: -2px;
+}
+
+/* Status variants for the header pill */
+.chat-req-header-pill.st-pending,
+.chat-req-header-pill.reg-new {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+.chat-req-header-pill.st-confirmed,
+.chat-req-header-pill.reg-contacted {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+  color: #0369a1;
+}
+.chat-req-header-pill.st-preparing,
+.chat-req-header-pill.st-out_for_delivery {
+  border-color: #ddd6fe;
+  background: #f5f3ff;
+  color: #5b21b6;
+}
+.chat-req-header-pill.st-delivered,
+.chat-req-header-pill.reg-confirmed,
+.chat-req-header-pill.reg-done {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+.chat-req-header-pill.st-cancelled,
+.chat-req-header-pill.reg-cancelled {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+/* ---- 2. Top Banner inside chat thread ---- */
+.chat-request-banner {
+  flex-shrink: 0;
+  margin: 8px 16px 4px 16px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #00a884;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  transition: all 0.2s ease;
+  z-index: 10;
+}
+
+.chat-request-banner:hover {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.cr-banner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cr-banner-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cr-banner-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.cr-banner-titles {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cr-banner-kind {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.cr-banner-time {
+  font-size: 11.5px;
+  color: #64748b;
+}
+
+.cr-banner-count-badge {
+  display: inline-flex;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #e2e8f0;
+  color: #334155;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.cr-banner-count-badge:hover {
+  background: #cbd5e1;
+}
+
+.cr-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cr-success-pill {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #15803d;
+  background: #dcfce7;
+  padding: 3px 8px;
+  border-radius: 6px;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Status dropdown selector */
+.cr-status-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.cr-status-label {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.cr-status-select {
+  font-size: 12px;
+  font-weight: 600;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background-color: #ffffff;
+  color: #1e293b;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.cr-status-select:focus {
+  border-color: #00a884;
+  box-shadow: 0 0 0 2px rgba(0, 168, 132, 0.15);
+}
+
+/* Status color styling for the select */
+.cr-status-select.st-pending,
+.cr-status-select.reg-new {
+  background-color: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
+}
+.cr-status-select.st-confirmed,
+.cr-status-select.reg-contacted {
+  background-color: #f0f9ff;
+  border-color: #bae6fd;
+  color: #0369a1;
+}
+.cr-status-select.st-preparing,
+.cr-status-select.st-out_for_delivery {
+  background-color: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #5b21b6;
+}
+.cr-status-select.st-delivered,
+.cr-status-select.reg-confirmed,
+.cr-status-select.reg-done {
+  background-color: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #166534;
+}
+.cr-status-select.st-cancelled,
+.cr-status-select.reg-cancelled {
+  background-color: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.cr-btn-details,
+.cr-btn-pdf {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #334155;
+  transition: all 0.15s ease;
+}
+
+.cr-btn-details:hover,
+.cr-btn-pdf:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.cr-btn-toggle {
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+.cr-btn-toggle:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.cr-banner-body {
+  border-top: 1px dashed #e2e8f0;
+  padding: 8px 14px 10px 14px;
+  background: #fafafa;
+}
+
+.cr-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cr-summary-chip {
+  font-size: 12px;
+  padding: 3px 8px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  color: #334155;
+}
+
+.cr-summary-chip.total {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #166534;
+  font-weight: 600;
+}
+
+.cr-summary-chip.member {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1e40af;
+}
+
+.cr-summary-chip.scheduled {
+  background: #fefce8;
+  border-color: #fef08a;
+  color: #854d0e;
+}
+
+/* ---- 3. Side Drawer for full request details ---- */
+.cr-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  display: flex;
+  justify-content: flex-end;
+  animation: fadeInBackdrop 0.2s ease;
+}
+
+@keyframes fadeInBackdrop {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.cr-drawer {
+  width: 480px;
+  max-width: 90vw;
+  height: 100%;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
+  animation: slideInDrawer 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideInDrawer {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.cr-drawer-head {
+  height: 64px;
+  padding: 0 20px;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f8fafc;
+  flex-shrink: 0;
+}
+
+.cr-dh-text h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.cr-dh-text p {
+  margin: 2px 0 0 0;
+  font-size: 12.5px;
+  color: #64748b;
+}
+
+.cr-dh-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #64748b;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  line-height: 1;
+}
+.cr-dh-close:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.cr-drawer-tabs {
+  display: flex;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  padding: 0 16px;
+}
+
+.cr-tab-btn {
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s ease;
+}
+
+.cr-tab-btn:hover {
+  color: #0f172a;
+}
+
+.cr-tab-btn.active {
+  color: #00a884;
+  border-bottom-color: #00a884;
+}
+
+.cr-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  background: #f1f5f9;
+}
+
+.cr-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cr-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: #64748b;
+  font-size: 14px;
+}
+
+/* Individual Request Card */
+.cr-card {
+  background: #ffffff;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #94a3b8;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cr-card.st-pending,
+.cr-card.reg-new { border-left-color: #f59e0b; }
+.cr-card.st-confirmed,
+.cr-card.reg-contacted { border-left-color: #0096de; }
+.cr-card.st-preparing { border-left-color: #8b5cf6; }
+.cr-card.st-out_for_delivery { border-left-color: #6366f1; }
+.cr-card.st-delivered,
+.cr-card.reg-confirmed,
+.cr-card.reg-done { border-left-color: #10b981; }
+.cr-card.st-cancelled,
+.cr-card.reg-cancelled { border-left-color: #ef4444; }
+
+.cr-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cr-card-ref {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cr-card-kind-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+.cr-card-kind-badge.reg {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.cr-card-ref strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.cr-card-date {
+  font-size: 12px;
+  color: #64748b;
+  margin-top: -6px;
+}
+
+/* Booking information box */
+.cr-booking-info {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.cr-info-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.cr-info-k {
+  color: #64748b;
+  font-weight: 500;
+  min-width: 100px;
+}
+
+.cr-info-v {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.cr-info-v.highlight {
+  color: #0369a1;
+  background: #e0f2fe;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* Items Table */
+.cr-items-table {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 12.5px;
+}
+
+.cr-it-head {
+  display: grid;
+  grid-template-columns: 1fr 50px 70px;
+  padding: 6px 12px;
+  background: #f8fafc;
+  font-weight: 600;
+  color: #64748b;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.cr-it-row {
+  display: grid;
+  grid-template-columns: 1fr 50px 70px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+}
+
+.cr-it-row:last-child {
+  border-bottom: none;
+}
+
+.cr-it-qty,
+.cr-it-price {
+  text-align: right;
+}
+
+.cr-it-row.total {
+  background: #f0fdf4;
+  border-top: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+.cr-meta-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.cr-meta-item {
+  display: flex;
+  gap: 6px;
+}
+
+.cr-meta-k {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.cr-meta-v {
+  color: #1e293b;
+}
+
+.cr-map-link {
+  color: #0284c7;
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+.cr-card-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.cr-card-pdf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #1e293b;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cr-card-pdf-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+/* Answers in form registration */
+.cr-answers-box {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.cr-answers-title {
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+
+.cr-answer-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.cr-ans-q {
+  font-weight: 500;
+  color: #475569;
+  min-width: 110px;
+}
+
+.cr-ans-a {
+  color: #0f172a;
+}
+

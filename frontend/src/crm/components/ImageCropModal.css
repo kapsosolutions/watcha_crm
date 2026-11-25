@@ -1,0 +1,345 @@
+/* ImageCropModal.css - Interactive image cropper and resizer for Social Posts */
+.cr-crop-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: crCropFadeIn 0.18s ease-out;
+}
+
+@keyframes crCropFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.cr-crop-modal {
+  background: #ffffff;
+  border-radius: 18px;
+  box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.35);
+  width: 100%;
+  max-width: 620px;
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: crCropSlideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes crCropSlideUp {
+  from { transform: translateY(18px) scale(0.98); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+/* Header */
+.cr-crop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.cr-crop-head-text h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #0f172a;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cr-crop-head-text h3 .material-icons {
+  font-size: 20px;
+  color: #16a34a;
+}
+
+.cr-crop-head-text p {
+  margin: 3px 0 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.cr-crop-close {
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: #f1f5f9;
+  border-radius: 50%;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cr-crop-close:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+/* Body */
+.cr-crop-body {
+  padding: 16px 22px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Ratio selector buttons */
+.cr-crop-ratios {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 580px) {
+  .cr-crop-ratios {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.cr-crop-ratio-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 6px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  cursor: pointer;
+  font: inherit;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.cr-crop-ratio-btn:hover {
+  border-color: #94a3b8;
+  background: #f1f5f9;
+}
+
+.cr-crop-ratio-btn.active {
+  border-color: #16a34a;
+  background: #f0fdf4;
+  color: #15803d;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.15);
+}
+
+.cr-crop-ratio-shape {
+  border: 2px solid currentColor;
+  border-radius: 3px;
+  opacity: 0.85;
+}
+
+.cr-crop-ratio-btn strong {
+  font-size: 13px;
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.cr-crop-ratio-btn.active strong {
+  color: #15803d;
+}
+
+.cr-crop-ratio-btn span.cr-sub {
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.2;
+}
+
+.cr-crop-ratio-btn.active span.cr-sub {
+  color: #166534;
+}
+
+/* Viewport Area */
+.cr-crop-stage {
+  position: relative;
+  width: 100%;
+  height: 340px;
+  background: #090d16;
+  border-radius: 14px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  touch-action: none;
+}
+
+.cr-crop-frame {
+  position: relative;
+  box-shadow: 0 0 0 9999px rgba(9, 13, 22, 0.72);
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  overflow: hidden;
+  cursor: grab;
+}
+
+.cr-crop-frame.dragging {
+  cursor: grabbing;
+}
+
+/* 3x3 Grid overlay */
+.cr-crop-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  opacity: 0.45;
+  transition: opacity 0.2s;
+}
+
+.cr-crop-grid div {
+  border-right: 1px dashed rgba(255, 255, 255, 0.65);
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.65);
+}
+
+.cr-crop-grid div:nth-child(3n) {
+  border-right: none;
+}
+
+.cr-crop-grid div:nth-child(n+7) {
+  border-bottom: none;
+}
+
+/* Image container */
+.cr-crop-img-wrap {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform-origin: center center;
+  pointer-events: none;
+}
+
+.cr-crop-img-wrap img {
+  display: block;
+  max-width: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Toolbar under viewport */
+.cr-crop-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+}
+
+.cr-crop-zoom-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  max-width: 280px;
+}
+
+.cr-crop-tool-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s;
+}
+
+.cr-crop-tool-btn:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.cr-crop-tool-btn .material-icons {
+  font-size: 18px;
+}
+
+.cr-crop-zoom-slider {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  accent-color: #16a34a;
+  cursor: pointer;
+}
+
+.cr-crop-zoom-pct {
+  font-size: 12px;
+  color: #64748b;
+  min-width: 36px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cr-crop-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Callout advice */
+.cr-crop-advice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.cr-crop-advice.info {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+.cr-crop-advice.warn {
+  background: #fefce8;
+  border: 1px solid #fef08a;
+  color: #854d0e;
+}
+
+.cr-crop-advice .material-icons {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+/* Footer */
+.cr-crop-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 22px 18px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+  gap: 12px;
+}
+
+.cr-crop-foot-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cr-crop-foot-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+

@@ -1,0 +1,3243 @@
+// Visual flow builder (node-to-node, drag & drop) built on React Flow.
+// Rich WhatsApp blocks: media header + body + reply buttons (each button has
+// its own output port for branching), CTA URL, Call, Ask location, List menu
+// (each row branches), and an approved-Template block.
+import { PlanCrown, useFeatureLock } from './PlanLocked';
+import { TIER_NAMES } from '../plans';
+import { waLanguageLabel } from '../waLanguages';
+import type { CrmView } from './NavRail';
+import { journeyTemplatesFor, kindsOf, type JourneyTemplateCard } from '../journeyTemplates';
+import './FlowTemplateGallery.css';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { UndoIcon, RedoIcon } from './AppIcons';
+import ReactFlow, {
+  Background,
+  BackgroundVariant,
+  Controls,
+  MiniMap,
+  Handle,
+  MarkerType,
+  Position,
+  addEdge,
+  useNodesState,
+  useEdgesState,
+  useReactFlow,
+  useUpdateNodeInternals,
+  useEdges,
+  useNodes,
+  ReactFlowProvider,
+  type Node,
+  type Edge,
+  type Connection,
+  type NodeProps,
+  type OnNodesChange,
+  type OnEdgesChange,
+} from 'reactflow';
+import 'reactflow/dist/style.css';
+import type { Dispatch, SetStateAction } from 'react';
+import type { CrmApi } from '../api';
+import type { BusinessProfile, TemplateItem, TemplateSource, TemplateVariable, Journey, PlanFeature, PlanTierKey } from '../types';
+import { verticalConfig, type VerticalConfig } from '../verticals';
+import { FlowBuilderPage } from './FlowBuilderPage';
+import { MediaCtx, useLeaveCleanup, useMedia, useMediaApi } from './uploadCtx';
+import { useConfirm, useFlash } from './Dialogs';
+import { useBackHandler } from '../useBackHandler';
+import { BladeSpinner } from './BladeSpinner';
+import { COMING_SOON } from '../features';
+import { ComingSoonPanel, SoonPill } from './ComingSoon';
+import { FullscreenButton, IN_HANDLE, inSideFor, organizeLayout, useCanvasFullscreen, type LayoutPort } from './canvasTools';
+import { FLOWS_MIN_LIMIT, useMessagingLimit } from './MessagingLimit';
+
+type Kind =
+  | 'start'
+  | 'message'
+  | 'reply'
+  | 'cta'
+  | 'call'
+  | 'location'
+  | 'list'
+  | 'template'
+  | 'quick'
+  | 'carousel'
+  | 'extender'
+  | 'end'
+  | 'restart'
+  // WhatsApp blocks that use the business's own data (journeyBlocks.js).
+  | 'catalog'
+  | 'categories'
+  | 'members'
+  | 'slots'
+  | 'book'
+  | 'order'
+  | 'offers';
+
+type HeaderType = 'none' | 'image' | 'video' | 'audio' | 'pdf';
+
+/** Which chats a journey answers. */
+export type JourneyChannel = 'whatsapp' | 'instagram' | 'messenger';
+
+interface CardButton {
+  title: string;
+  /** A link opens it; empty = a reply button that branches (its own port). */
+  url: string;
+}
+interface CardData {
+  imageUrl: string;
+  /** WhatsApp cards can carry a video instead of a photo. */
+  mediaType?: 'image' | 'video';
+  title: string;
+  subtitle: string;
+  buttons: CardButton[];
+}
+
+interface WaData {
+  kind: Kind;
+  text?: string;
+  header?: HeaderType;
+  headerMediaUrl?: string;
+  headerFileName?: string;
+  buttons?: string[];
+  listTitle?: string;
+  options?: string[];
+  ctaText?: string;
+  ctaUrl?: string;
+  callText?: string;
+  callPhone?: string;
+  templateName?: string;
+  /** Instagram / Messenger card or carousel. */
+  cards?: CardData[];
+  /** Extender: how many numbered outputs it has (each sends its block, in order). */
+  slots?: number;
+  /** WhatsApp carousel: every card has quick replies, or one link button. */
+  waButtons?: 'reply' | 'link';
+  /** Template: the block's own values for {{1}}, {{2}}… ('' = the template's mapping). */
+  templateVars?: Record<string, string>;
+  /** Template: header media for this journey (replaces the template's own). */
+  templateMediaUrl?: string;
+  templateFileName?: string;
+  /** Catalog: '' = the category the customer chose (else all), '*' = all, else a category name. */
+  catalogCategory?: string;
+  /** Date & time: how many days ahead to offer. */
+  days?: number;
+  /** Book: what the customer is told when the time can't be booked. */
+  failText?: string;
+  /** Mapped keys/values for numbered placeholders {{1}}, {{2}}… in this block. */
+  variables?: TemplateVariable[];
+}
+
+/** The journey's channel, for the blocks (header types, limits, wording). */
+const ChannelCtx = createContext<JourneyChannel>('whatsapp');
+const CHANNEL_NAME: Record<JourneyChannel, string> = { whatsapp: 'WhatsApp', instagram: 'Instagram', messenger: 'Messenger' };
+const CHANNEL_ICON: Record<JourneyChannel, string> = { whatsapp: '/whatsapp.svg', instagram: '/channel-instagram.svg', messenger: '/channel-messenger.svg' };
+const EDGE_COLOR: Record<JourneyChannel, string> = { whatsapp: '#25d366', instagram: '#e1306c', messenger: '#0084ff' };
+// Meta's Send API limits for Instagram / Messenger buttons and chips.
+const META_BUTTON_TITLE = 20;
+const META_QUICK_REPLIES = 13;
+const META_CARDS = 10;
+const META_CARD_BUTTONS = 3;
+// Extender: at least two numbered outputs (one would just be a connection), at most ten.
+const EXT_MIN = 2;
+const EXT_MAX = 10;
+const extSlots = (d: WaData) => Math.min(EXT_MAX, Math.max(EXT_MIN, Math.round(Number(d.slots) || EXT_MIN)));
+// WhatsApp carousel (Meta's interactive media carousel, sent without a
+// template): 2 to 10 cards, each with a photo or video, 160 characters of
+// text, and either 1 or 2 quick replies (the same on every card) or one link.
+const WA_CARDS_MIN = 2;
+const WA_CARDS_MAX = 10;
+const WA_CARD_REPLIES = 2;
+const WA_CARD_TITLE = 50;
+const WA_CARD_LINE = 100;
+const WA_BUTTON_TITLE = 20;
+const waMode = (d: WaData): 'reply' | 'link' =>
+  d.waButtons || ((d.cards || []).some((c) => c.buttons.some((b) => b.url)) ? 'link' : 'reply');
+const waReplies = (d: WaData) =>
+  Math.min(WA_CARD_REPLIES, Math.max(1, ...(d.cards || []).map((c) => c.buttons.filter((b) => !b.url).length)));
+const isHttps = (u: string) => /^https:\/\/\S+$/i.test(String(u || '').trim());
+/** What would stop WhatsApp from sending the carousel ('' = fine). */
+function waCarouselProblem(d: WaData, saveable: (url: string) => boolean): string {
+  const cards = d.cards || [];
+  if (!String(d.text || '').trim()) return 'Add the message text above the cards';
+  if (cards.length < WA_CARDS_MIN) return 'A WhatsApp carousel needs at least 2 cards';
+  // An upload still running (its instant preview) doesn't count yet.
+  if (cards.some((c) => !c.imageUrl || !saveable(c.imageUrl))) return 'Every card needs a photo or video';
+  if (waMode(d) === 'link') return cards.some((c) => !isHttps(c.buttons[0]?.url || '')) ? 'Every card needs its link (https://…)' : '';
+  const n = waReplies(d);
+  return cards.some((c) => Array.from({ length: n }, (_, j) => c.buttons[j]?.title || '').some((t) => !t.trim())) ? 'Every button needs a title' : '';
+}
+const waNewCard = (buttons: CardButton[]): CardData => ({ imageUrl: '', mediaType: 'image', title: '', subtitle: '', buttons: buttons.map((b) => ({ ...b })) });
+const newCard = (): CardData => ({ imageUrl: '', title: '', subtitle: '', buttons: [{ title: 'Choose', url: '' }] });
+
+const KINDS: Record<Kind, { title: string; icon: string; color: string }> = {
+  start: { title: 'Start', icon: 'play_arrow', color: '#107c3f' },
+  message: { title: 'Send message', icon: 'chat', color: '#0096de' },
+  reply: { title: 'Reply buttons', icon: 'smart_button', color: '#8b5cf6' },
+  cta: { title: 'CTA URL', icon: 'open_in_new', color: '#0d9488' },
+  call: { title: 'Call button', icon: 'call', color: '#f59e0b' },
+  location: { title: 'Ask location', icon: 'location_on', color: '#ea4335' },
+  list: { title: 'List menu', icon: 'list', color: '#6366f1' },
+  template: { title: 'Template', icon: 'description', color: '#107c3f' },
+  quick: { title: 'Quick replies', icon: 'bubble_chart', color: '#ec4899' },
+  carousel: { title: 'Cards', icon: 'view_carousel', color: '#0ea5e9' },
+  // Sends several blocks one after another: output 1, then 2, then 3…
+  extender: { title: 'Extender', icon: 'call_split', color: '#c026d3' },
+  end: { title: 'End', icon: 'stop', color: '#ea4335' },
+  // Like the Flows builder's "Start over": back to Start, as if the customer said "hi".
+  restart: { title: 'Start again', icon: 'restart_alt', color: '#25d366' },
+  catalog: { title: 'Catalog', icon: 'storefront', color: '#f97316' },
+  categories: { title: 'Categories', icon: 'category', color: '#14b8a6' },
+  members: { title: 'Members', icon: 'groups', color: '#7c3aed' },
+  slots: { title: 'Date & time', icon: 'event', color: '#0284c7' },
+  book: { title: 'Book', icon: 'event_available', color: '#16a34a' },
+  order: { title: 'Place order', icon: 'receipt_long', color: '#15803d' },
+  offers: { title: 'Offers', icon: 'local_offer', color: '#e11d48' },
+};
+
+/** The business's category, for the blocks' wording ("Doctors", "Specialisations"). */
+const VerticalCtx = createContext<VerticalConfig | undefined>(undefined);
+/** The business's category names (Catalog block: which products). */
+const CategoryNamesCtx = createContext<string[]>([]);
+
+/** What a booking is called: an appointment, a booking, a visit. */
+const bookTitle = (v?: VerticalConfig) =>
+  v?.archetype === 'unit' ? 'Confirm booking' : v?.archetype === 'lead' ? 'Book a visit' : 'Book appointment';
+
+/** A block's name: on WhatsApp the cards block is called a carousel (as in WhatsApp); data blocks use the business's words. */
+const titleOf = (kind: Kind, channel: JourneyChannel, v?: VerticalConfig) => {
+  if (kind === 'carousel' && channel === 'whatsapp') return 'Carousel';
+  if (kind === 'categories' && v) return v.categoryPlural;
+  if (kind === 'members' && v) return v.memberLabel;
+  if (kind === 'book') return bookTitle(v);
+  return KINDS[kind].title;
+};
+
+const HEADER_KINDS = new Set<Kind>(['message', 'reply', 'cta', 'call']);
+const BODY_KINDS = new Set<Kind>(['message', 'reply', 'cta', 'call', 'location', 'list', 'quick', 'carousel', 'catalog', 'categories', 'members', 'slots', 'book', 'order', 'offers']);
+/** Blocks that use the business's data; WhatsApp only. */
+const DATA_KINDS = new Set<Kind>(['catalog', 'categories', 'members', 'slots', 'book', 'order', 'offers']);
+const BODY_PLACEHOLDER: Partial<Record<Kind, string>> = {
+  catalog: 'Text above the products…',
+  categories: 'The question above the list…',
+  members: 'The question above the list…',
+  slots: 'The question above the days…',
+  book: 'The confirmation the customer gets…',
+  order: 'The confirmation the customer gets…',
+  offers: 'Text above the offers (optional)…',
+};
+/** The live values each data block's text can use (choices made earlier in the journey). */
+const DATA_TOKENS: Partial<Record<Kind, string[]>> = {
+  catalog: ['name', 'category'],
+  categories: ['name'],
+  members: ['name', 'category'],
+  slots: ['name', 'category', 'member'],
+  book: ['name', 'member', 'member_fee', 'appointment_date', 'appointment_slot', 'order_id'],
+  order: ['name', 'order_id', 'cart_items', 'items_total', 'total_payable'],
+  offers: ['name'],
+};
+// A block's outputs (its ports on the right) come from outputsOf(): one for a
+// plain block, one per button / option for the branching ones, none for End
+// and Start again.
+
+const HEADER_ICON: Record<HeaderType, string> = {
+  none: 'block',
+  image: 'image',
+  video: 'videocam',
+  audio: 'mic',
+  pdf: 'picture_as_pdf',
+};
+const HEADER_LABEL: Record<HeaderType, string> = { none: 'No media', image: 'Image', video: 'Video', audio: 'Audio', pdf: 'File' };
+/** Media a block can carry: WhatsApp headers, or Instagram / Messenger attachments (sent before the text). */
+const headerTypesFor = (channel: JourneyChannel, kind: Kind): HeaderType[] =>
+  channel === 'whatsapp' ? ['none', 'image', 'video', 'pdf'] : kind === 'message' ? ['none', 'image', 'video', 'audio', 'pdf'] : ['none', 'image', 'video', 'pdf'];
+
+const TemplatesCtx = createContext<TemplateItem[]>([]);
+
+const DEFAULT_TEMPLATE_SOURCES: TemplateSource[] = [
+  { key: 'customer_name', label: 'Customer name', hint: 'The name they gave in a flow form, else their WhatsApp name' },
+  { key: 'customer_phone', label: 'Customer phone' },
+  { key: 'business_name', label: 'Business name' },
+  { key: 'order_id', label: 'Order reference' },
+  { key: 'order_status', label: 'Order status' },
+  { key: 'order_total', label: 'Order total' },
+  { key: 'order_date', label: 'Order date' },
+  { key: 'order_items', label: 'Order items' },
+  { key: 'payment_status', label: 'Paid / not paid' },
+  { key: 'payment_method', label: 'Payment method' },
+  { key: 'delivery_address', label: 'Delivery address' },
+  { key: 'today', label: "Today's date" },
+  { key: 'member_name', label: 'Staff / member name' },
+  { key: 'appointment_date', label: 'Appointment date' },
+  { key: 'appointment_slot', label: 'Appointment time' },
+];
+const SourcesCtx = createContext<TemplateSource[]>(DEFAULT_TEMPLATE_SOURCES);
+
+function tmplBtnIcon(type: string): string {
+  return type === 'URL' ? 'open_in_new' : type === 'PHONE_NUMBER' ? 'call' : 'reply';
+}
+
+function makeData(kind: Kind, count = 1, header: HeaderType = 'none', channel: JourneyChannel = 'whatsapp', v?: VerticalConfig): WaData {
+  const lower = (s: string | undefined, d: string) => (s || d).toLowerCase();
+  switch (kind) {
+    case 'catalog':
+      return { kind, text: 'Browse our products and send us your cart 🛒', catalogCategory: '' };
+    case 'categories':
+      return { kind, text: `Please choose a ${lower(v?.categoryLabel, 'category')}:`, listTitle: 'Choose' };
+    case 'members':
+      return { kind, text: `Please choose a ${lower(v?.memberSingular, 'member')}:`, listTitle: 'Choose' };
+    case 'slots':
+      return { kind, text: 'Pick a day for {{member}}:', listTitle: 'Pick a day', days: 7 };
+    case 'book':
+      return {
+        kind,
+        text: '✅ Booked: {{member}} on {{appointment_date}} at {{appointment_slot}}.\nYour reference: {{order_id}}',
+        failText: 'Sorry, that time was just taken. Please pick another time.',
+      };
+    case 'order':
+      return { kind, text: '✅ Order {{order_id}} placed!\n{{cart_items}}\nTotal: {{total_payable}}\nWe’ll message you when it’s on its way.' };
+    case 'offers':
+      return { kind, text: '🎉 Our offers right now:' };
+    case 'quick':
+      return { kind, text: '', options: ['Option 1', 'Option 2'] };
+    case 'carousel':
+      // WhatsApp: at least 2 cards, each with one quick reply to start with.
+      if (channel === 'whatsapp') {
+        return { kind, text: '', waButtons: 'reply', cards: Array.from({ length: Math.max(WA_CARDS_MIN, count) }, () => waNewCard([{ title: 'Choose', url: '' }])) };
+      }
+      return { kind, text: '', cards: Array.from({ length: count }, newCard) };
+    case 'reply':
+      return {
+        kind,
+        header: 'none',
+        text: '',
+        buttons: Array.from({ length: count }, (_, i) => `Button ${i + 1}`),
+      };
+    case 'list':
+      return { kind, text: '', listTitle: 'Menu', options: ['Option 1', 'Option 2'] };
+    case 'cta':
+      return { kind, header: 'none', text: '', ctaText: 'Visit website', ctaUrl: '' };
+    case 'call':
+      return { kind, header: 'none', text: '', callText: 'Call us', callPhone: '' };
+    case 'location':
+      return { kind, text: 'Please share your delivery location.' };
+    case 'template':
+      return { kind, templateName: '', templateVars: {} };
+    case 'extender':
+      return { kind, slots: Math.min(EXT_MAX, Math.max(EXT_MIN, count > 1 ? count : 3)) };
+    case 'message':
+      return { kind, header, text: '' };
+    default:
+      return { kind };
+  }
+}
+
+const ACCEPT: Record<HeaderType, string> = {
+  none: '',
+  image: 'image/*',
+  video: 'video/*',
+  audio: 'audio/*',
+  pdf: 'application/pdf',
+};
+
+/** A block's settings, shown in the pop-up when the block is clicked (BlockEditor). */
+function NodeFields({ id, data }: { id: string; data: WaData }) {
+  const rf = useReactFlow();
+  const templates = useContext(TemplatesCtx);
+  const sources = useContext(SourcesCtx);
+  const channel = useContext(ChannelCtx);
+  const v = useContext(VerticalCtx);
+  const categoryNames = useContext(CategoryNamesCtx);
+  const meta = channel !== 'whatsapp';
+  const titleMax = meta ? META_BUTTON_TITLE : undefined;
+  const { upload, discard } = useMedia();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const tplFileRef = useRef<HTMLInputElement>(null);
+  const cardFileRef = useRef<HTMLInputElement>(null);
+  const cardTarget = useRef(-1);
+  // WhatsApp carousel: the row of cards (scrolled to a card that was just added).
+  const waRowRef = useRef<HTMLDivElement>(null);
+  const k = KINDS[data.kind];
+  const patch = (p: Partial<WaData>) =>
+    rf.setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...p } } : n)));
+
+  // Switch header type and, for media types, immediately open the file picker.
+  // Clearing the header reclaims the file if it was uploaded this session.
+  const pickHeader = (h: HeaderType) => {
+    if (h === 'none') discard(data.headerMediaUrl);
+    patch({ header: h, ...(h === 'none' ? { headerMediaUrl: '', headerFileName: '' } : {}) });
+    if (h !== 'none') setTimeout(() => fileRef.current?.click(), 0);
+  };
+  const onHeaderFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    const previous = data.headerMediaUrl;
+    patch({ headerMediaUrl: URL.createObjectURL(f), headerFileName: f.name }); // instant preview
+    upload(f)
+      .then((url) => {
+        patch({ headerMediaUrl: url });
+        discard(previous); // replaced → reclaim the old upload
+      })
+      .catch(() => {});
+  };
+  // Template: this journey's own header media (replaces the template's).
+  const onTemplateFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    const previous = data.templateMediaUrl;
+    patch({ templateMediaUrl: URL.createObjectURL(f), templateFileName: f.name });
+    upload(f)
+      .then((url) => {
+        patch({ templateMediaUrl: url });
+        discard(previous);
+      })
+      .catch(() => {});
+  };
+  const pickTemplate = (name: string) => {
+    discard(data.templateMediaUrl);
+    patch({ templateName: name, templateVars: {}, templateMediaUrl: '', templateFileName: '' });
+    // The old template's quick-reply outputs go with it.
+    rf.setEdges((es) => es.filter((e) => !(e.source === id && /^tbtn-/.test(e.sourceHandle || ''))));
+  };
+  const setButton = (i: number, v: string) =>
+    patch({ buttons: (data.buttons || []).map((b, idx) => (idx === i ? v : b)) });
+  // Buttons whose title repeats an earlier one (WhatsApp refuses those).
+  const dupButtons = new Set<number>();
+  (data.buttons || []).forEach((b, i, all) => {
+    const t = String(b || '').trim().toLowerCase();
+    if (t && all.slice(0, i).some((x) => String(x || '').trim().toLowerCase() === t)) dupButtons.add(i);
+  });
+  const setOption = (i: number, v: string) =>
+    patch({ options: (data.options || []).map((o, idx) => (idx === i ? v : o)) });
+  const addOption = () => {
+    const opts = data.options || [];
+    if (opts.length >= 10) return;
+    patch({ options: [...opts, `Option ${opts.length + 1}`] });
+  };
+  const removeOption = (i: number) =>
+    patch({ options: (data.options || []).filter((_, idx) => idx !== i) });
+  const optionMax = data.kind === 'quick' ? META_QUICK_REPLIES : 10;
+  const addQuick = () => {
+    const opts = data.options || [];
+    if (opts.length >= optionMax) return;
+    patch({ options: [...opts, `Option ${opts.length + 1}`] });
+  };
+
+  // Cards (Instagram / Messenger): edit one card, add / remove cards and buttons.
+  const cards = data.cards || [];
+  const setCard = (i: number, p: Partial<CardData>) => patch({ cards: cards.map((c, idx) => (idx === i ? { ...c, ...p } : c)) });
+  const setCardButton = (i: number, j: number, p: Partial<CardButton>) =>
+    setCard(i, { buttons: cards[i].buttons.map((b, idx) => (idx === j ? { ...b, ...p } : b)) });
+  const pickCardImage = (i: number) => {
+    cardTarget.current = i;
+    setTimeout(() => cardFileRef.current?.click(), 0);
+  };
+  const onCardFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    const i = cardTarget.current;
+    if (!f || i < 0) return;
+    const previous = (rf.getNode(id)?.data as WaData | undefined)?.cards?.[i]?.imageUrl || '';
+    const mediaType: CardData['mediaType'] = f.type.startsWith('video/') ? 'video' : 'image';
+    const setImage = (url: string) =>
+      rf.setNodes((nds) => nds.map((n) => {
+        if (n.id !== id) return n;
+        const list = ((n.data as WaData).cards || []).map((c, idx) => (idx === i ? { ...c, imageUrl: url, mediaType } : c));
+        return { ...n, data: { ...n.data, cards: list } };
+      }));
+    setImage(URL.createObjectURL(f));
+    upload(f)
+      .then((url) => {
+        setImage(url);
+        discard(previous);
+      })
+      .catch(() => {});
+  };
+  const removeCard = (i: number) => {
+    discard(cards[i]?.imageUrl);
+    patch({ cards: cards.filter((_, idx) => idx !== i) });
+    // Its reply ports go with it; later cards' ports keep their old index, so drop their edges too.
+    rf.setEdges((es) => es.filter((e) => !(e.source === id && /^card-(\d+)-/.test(e.sourceHandle || '') && Number(/^card-(\d+)-/.exec(e.sourceHandle || '')![1]) >= i)));
+  };
+
+  // WhatsApp carousel: one button layout for every card (Meta's rule).
+  const wa = channel === 'whatsapp';
+  const mode = waMode(data);
+  const replies = waReplies(data);
+  const dropCardEdges = (keep: (card: number, btn: number) => boolean) =>
+    rf.setEdges((es) => es.filter((e) => {
+      const m = e.source === id ? /^card-(\d+)-(\d+)$/.exec(e.sourceHandle || '') : null;
+      return !m || keep(Number(m[1]), Number(m[2]));
+    }));
+  const setWaMode = (next: 'reply' | 'link') => {
+    if (next === mode && data.waButtons) return;
+    patch({
+      waButtons: next,
+      cards: cards.map((c) => ({
+        ...c,
+        buttons: next === 'link'
+          ? [{ title: c.buttons.find((b) => b.url)?.title || 'Open', url: c.buttons.find((b) => b.url)?.url || '' }]
+          : Array.from({ length: replies }, (_, j) => ({ title: c.buttons[j] && !c.buttons[j].url ? c.buttons[j].title : j ? 'More' : 'Choose', url: '' })),
+      })),
+    });
+    // Links don't branch: the quick replies' connections go.
+    if (next === 'link') dropCardEdges(() => false);
+  };
+  const setWaReplies = (n: number) => {
+    patch({ cards: cards.map((c) => ({ ...c, buttons: Array.from({ length: n }, (_, j) => c.buttons[j] && !c.buttons[j].url ? c.buttons[j] : { title: j ? 'More' : 'Choose', url: '' }) })) });
+    dropCardEdges((_c, b) => b < n);
+  };
+  const addWaCard = () => {
+    if (cards.length >= WA_CARDS_MAX) return;
+    const first = cards[0]?.buttons || [{ title: 'Choose', url: '' }];
+    patch({ cards: [...cards, waNewCard(mode === 'link' ? [{ title: first[0]?.title || 'Open', url: '' }] : first.map((b) => ({ title: b.title, url: '' })))] });
+    setTimeout(() => {
+      const row = waRowRef.current;
+      row?.scrollTo({ left: row.scrollWidth, behavior: 'smooth' });
+    }, 0);
+  };
+
+  // Extender: what each numbered output leads to, live from the canvas.
+  const allEdges = useEdges();
+  const allNodes = useNodes<WaData>();
+  const slots = extSlots(data);
+  const extTarget = (i: number) => {
+    const e = allEdges.find((x) => x.source === id && x.sourceHandle === `ext-${i}`);
+    return e ? allNodes.find((n) => n.id === e.target) || null : null;
+  };
+  const addSlot = () => {
+    if (slots < EXT_MAX) patch({ slots: slots + 1 });
+  };
+  // The removed number's connection goes; the later ones move up a number.
+  const removeSlot = (i: number) => {
+    if (slots <= EXT_MIN) return;
+    patch({ slots: slots - 1 });
+    rf.setEdges((es) => es
+      .filter((e) => !(e.source === id && e.sourceHandle === `ext-${i}`))
+      .map((e) => {
+        const m = e.source === id ? /^ext-(\d+)$/.exec(e.sourceHandle || '') : null;
+        return m && Number(m[1]) > i ? { ...e, sourceHandle: `ext-${Number(m[1]) - 1}` } : e;
+      }));
+  };
+
+  return (
+    <div className="fl-node jn-fields" data-kind={data.kind} style={{ ['--k' as string]: k.color }}>
+      {data.kind === 'start' && (
+        <div className="fl-restart jn-start-note" data-testid="fl-start-note">
+          <span className="material-icons">bolt</span>
+          <div>
+            The journey starts here when a customer messages you (a new chat, or any message while no block is waiting for a tap).
+            Connect it to your first message.
+          </div>
+        </div>
+      )}
+      {data.kind === 'end' && (
+        <div className="fl-restart jn-start-note">
+          <span className="material-icons">stop_circle</span>
+          <div>Ends the journey. The customer&apos;s next message starts it again from Start.</div>
+        </div>
+      )}
+
+      {HEADER_KINDS.has(data.kind) && (
+        <div className="fl-header">
+          <div className="fl-header-tabs">
+            {headerTypesFor(channel, data.kind).map((h) => (
+              <button
+                key={h}
+                className={`fl-htab${(data.header || 'none') === h ? ' active' : ''}`}
+                onClick={() => pickHeader(h)}
+                title={HEADER_LABEL[h]}
+                data-testid={`fl-htab-${h}`}
+              >
+                <span className="material-icons">{HEADER_ICON[h]}</span>
+              </button>
+            ))}
+          </div>
+          {data.header && data.header !== 'none' && (
+            <div className="fl-header-tile" onClick={() => fileRef.current?.click()} title="Upload / replace">
+              {data.headerMediaUrl ? (
+                data.header === 'image' ? (
+                  <img src={data.headerMediaUrl} alt="" />
+                ) : data.header === 'video' ? (
+                  <video src={data.headerMediaUrl} />
+                ) : data.header === 'audio' ? (
+                  <div className="fl-pdf-chip">
+                    <span className="material-icons">mic</span>
+                    <span className="fl-pdf-name">{data.headerFileName || 'audio'}</span>
+                  </div>
+                ) : (
+                  <div className="fl-pdf-chip">
+                    <span className="material-icons">picture_as_pdf</span>
+                    <span className="fl-pdf-name">{data.headerFileName || 'document.pdf'}</span>
+                  </div>
+                )
+              ) : (
+                <div className="fl-upload-hint">
+                  <span className="material-icons">upload</span>
+                  <span>Upload {data.header === 'pdf' ? (meta ? 'file' : 'pdf') : data.header}</span>
+                </div>
+              )}
+            </div>
+          )}
+          <input ref={fileRef} type="file" hidden accept={ACCEPT[data.header || 'none']} onChange={onHeaderFile} />
+        </div>
+      )}
+
+      {/* Sends nothing itself: it loops back to Start, so it has an input and no output. */}
+      {data.kind === 'restart' && (
+        <div className="fl-restart" data-testid="fl-restart">
+          <span className="material-icons">replay</span>
+          <div>
+            Goes back to <strong>Start</strong> and runs the journey again, exactly like the customer typing &quot;hi&quot;.
+          </div>
+        </div>
+      )}
+
+      {BODY_KINDS.has(data.kind) && (
+        <textarea
+          className="fl-node-text"
+          value={data.text || ''}
+          placeholder={BODY_PLACEHOLDER[data.kind] || (data.kind === 'location' ? 'Prompt text…' : data.kind === 'carousel' ? (channel === 'whatsapp' ? 'Message above the cards (required)…' : 'Text before the cards (optional)…') : 'Type the message… use {{name}} to greet them')}
+          onChange={(e) => patch({ text: e.target.value })}
+          rows={data.kind === 'book' || data.kind === 'order' ? 4 : 2}
+          data-testid="jn-body"
+        />
+      )}
+      {DATA_KINDS.has(data.kind) && (
+        <div className="fl-node-tokens" data-testid="jn-tokens">
+          <span className="material-icons">bolt</span>
+          <span>
+            Live values:{' '}
+            {(DATA_TOKENS[data.kind] || []).map((t, i) => (
+              <span key={t}>{i ? ' · ' : ''}<code>{`{{${t}}}`}</code></span>
+            ))}
+          </span>
+        </div>
+      )}
+      {BODY_KINDS.has(data.kind) && !DATA_KINDS.has(data.kind) && /\{\{/.test(data.text || '') && (
+        <div className="fl-node-tokens">
+          <span className="material-icons">bolt</span>
+          <span>
+            Live values: <code>{'{{name}}'}</code> ({meta ? `their ${CHANNEL_NAME[channel]} name` : 'their form name, else WhatsApp name'}) ·{' '}
+            <code>{'{{business_name}}'}</code> · <code>{'{{today}}'}</code>
+          </span>
+        </div>
+      )}
+      {nodePlaceholderIndexes(data).length > 0 && (
+        <div className="fl-node-tokens" data-testid="jn-numbered-vars-hint">
+          <span className="material-icons">tune</span>
+          <span>
+            Numbered values:{' '}
+            {nodePlaceholderIndexes(data).map((idx, i) => {
+              const mapped = (data.variables || []).find((v) => Number(v.index) === idx);
+              const label = mapped?.source === 'other'
+                ? (mapped.name || mapped.fallback || 'Custom value')
+                : mapped?.source
+                  ? (sources.find((s) => s.key === mapped.source)?.label || mapped.source.replace(/_/g, ' '))
+                  : (mapped?.fallback || '');
+              return (
+                <span key={idx}>
+                  {i ? ' · ' : ''}
+                  <code>{`{{${idx}}}`}</code>
+                  {label ? ` → ${label}` : ''}
+                </span>
+              );
+            })}
+            {' · Click '}<b>Continue</b>{' to set keys & values'}
+          </span>
+        </div>
+      )}
+
+      {data.kind === 'reply' && (
+        <div className="fl-rows">
+          {(data.buttons || []).map((b, i) => (
+            <div className={`fl-row reply${dupButtons.has(i) ? ' dup' : ''}`} key={i}>
+              <span className="material-icons fl-row-ic">reply</span>
+              <input
+                value={b}
+                onChange={(e) => setButton(i, e.target.value)}
+                placeholder="Button"
+                maxLength={titleMax}
+                aria-invalid={dupButtons.has(i) || undefined}
+                title={dupButtons.has(i) ? 'Another button has this title: give each button its own' : undefined}
+              />
+            </div>
+          ))}
+          {dupButtons.size > 0 && (
+            <div className="fl-dup-note" data-testid="fl-dup-note">
+              <span className="material-icons">error_outline</span>
+              Give each button its own title: WhatsApp doesn’t accept two buttons with the same one.
+            </div>
+          )}
+        </div>
+      )}
+
+      {data.kind === 'list' && (
+        <div className="fl-rows">
+          <input
+            className="fl-list-title"
+            value={data.listTitle || ''}
+            onChange={(e) => patch({ listTitle: e.target.value })}
+            placeholder="List button label"
+          />
+          {(data.options || []).map((o, i) => (
+            <div className="fl-row" key={i}>
+              <span className="fl-row-num">{i + 1}</span>
+              <input value={o} onChange={(e) => setOption(i, e.target.value)} placeholder="Option" />
+              <button className="fl-row-del" onClick={() => removeOption(i)} title="Remove">
+                <span className="material-icons">close</span>
+              </button>
+            </div>
+          ))}
+          {(data.options || []).length < 10 && (
+            <button className="fl-add-opt" onClick={addOption}>
+              <span className="material-icons">add</span> Add option
+            </button>
+          )}
+        </div>
+      )}
+
+      {data.kind === 'extender' && (
+        <div className="fl-rows" data-testid="fl-ext-rows">
+          <div className="fl-restart jn-start-note">
+            <span className="material-icons">call_split</span>
+            <div>
+              Sends several messages one after another, in number order: 1 first, then 2, then 3. Connect a block to each
+              number on the canvas. The blocks connected after it go out with it.
+            </div>
+          </div>
+          {Array.from({ length: slots }, (_, i) => {
+            const t = extTarget(i);
+            return (
+              <div className={`fl-row ext${t ? '' : ' empty'}`} key={i} data-testid={`fl-ext-row-${i}`}>
+                <span className="fl-row-num">{i + 1}</span>
+                <span className="fl-ext-target" title={t ? summaryOf(t.data, channel, v) : undefined}>
+                  {t ? `${KINDS[t.data.kind] ? titleOf(t.data.kind, channel, v) : 'Block'} · ${summaryOf(t.data, channel, v)}` : 'Not connected yet'}
+                </span>
+                {slots > EXT_MIN && (
+                  <button className="fl-row-del" onClick={() => removeSlot(i)} title="Remove this number" data-testid={`fl-ext-del-${i}`}>
+                    <span className="material-icons">close</span>
+                  </button>
+                )}
+              </div>
+            );
+          })}
+          {slots < EXT_MAX && (
+            <button className="fl-add-opt" onClick={addSlot} data-testid="fl-ext-add">
+              <span className="material-icons">add</span> Add a message
+            </button>
+          )}
+        </div>
+      )}
+
+      {data.kind === 'quick' && (
+        <div className="fl-rows" data-testid="fl-quick-rows">
+          {(data.options || []).map((o, i) => (
+            <div className="fl-row quick" key={i}>
+              <span className="material-icons fl-row-ic">chat_bubble_outline</span>
+              <input value={o} onChange={(e) => setOption(i, e.target.value)} placeholder="Quick reply" maxLength={META_BUTTON_TITLE} />
+              <button className="fl-row-del" onClick={() => removeOption(i)} title="Remove">
+                <span className="material-icons">close</span>
+              </button>
+            </div>
+          ))}
+          {(data.options || []).length < optionMax && (
+            <button className="fl-add-opt" onClick={addQuick} data-testid="fl-quick-add">
+              <span className="material-icons">add</span> Add quick reply
+            </button>
+          )}
+        </div>
+      )}
+
+      {data.kind === 'carousel' && wa && (
+        <div className="fl-cards" data-testid="fl-cards">
+          <div className="fl-restart jn-start-note">
+            <span className="material-icons">view_carousel</span>
+            <div>
+              Your message, then the cards side by side. WhatsApp needs 2 to 10 cards, each with a photo or video, and the
+              same buttons on every card.
+            </div>
+          </div>
+          <div className="fl-seg-row">
+            <span className="fl-seg-label">Card buttons</span>
+            <div className="fl-seg" role="radiogroup" aria-label="Card buttons">
+              <button type="button" className={`fl-seg-btn${mode === 'reply' ? ' on' : ''}`} onClick={() => setWaMode('reply')} aria-pressed={mode === 'reply'} data-testid="fl-wa-mode-reply">
+                <span className="material-icons">reply</span> Quick replies
+              </button>
+              <button type="button" className={`fl-seg-btn${mode === 'link' ? ' on' : ''}`} onClick={() => setWaMode('link')} aria-pressed={mode === 'link'} data-testid="fl-wa-mode-link">
+                <span className="material-icons">open_in_new</span> Link
+              </button>
+            </div>
+          </div>
+          {mode === 'reply' && (
+            <div className="fl-seg-row">
+              <span className="fl-seg-label">On every card</span>
+              <div className="fl-seg" role="radiogroup" aria-label="Quick replies on every card">
+                {Array.from({ length: WA_CARD_REPLIES }, (_, j) => j + 1).map((n) => (
+                  <button type="button" key={n} className={`fl-seg-btn${replies === n ? ' on' : ''}`} onClick={() => setWaReplies(n)} aria-pressed={replies === n} data-testid={`fl-wa-replies-${n}`}>
+                    {n} {n === 1 ? 'button' : 'buttons'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="fl-wa-cards" ref={waRowRef} data-testid="fl-wa-cards">
+          {cards.map((c, i) => (
+            <div className="fl-card fl-wa-card" key={i} data-testid={`fl-card-${i}`}>
+              <div className="fl-card-head">
+                <span>Card {i + 1}</span>
+                {cards.length > WA_CARDS_MIN && (
+                  <button className="fl-row-del" onClick={() => removeCard(i)} title="Remove card" data-testid={`fl-card-del-${i}`}>
+                    <span className="material-icons">close</span>
+                  </button>
+                )}
+              </div>
+              <div className={`fl-header-tile fl-card-img fl-wa-img${c.imageUrl ? '' : ' need'}`} onClick={() => pickCardImage(i)} title="Upload / replace the photo or video">
+                {c.imageUrl ? (
+                  c.mediaType === 'video' ? <video src={c.imageUrl} muted /> : <img src={c.imageUrl} alt="" />
+                ) : (
+                  <div className="fl-upload-hint">
+                    <span className="material-icons">upload</span>
+                    <span>Photo or video (required)</span>
+                  </div>
+                )}
+              </div>
+              <input className="fl-card-in" value={c.title} onChange={(e) => setCard(i, { title: e.target.value })} placeholder="Title (shown in bold)" maxLength={WA_CARD_TITLE} data-testid={`fl-card-title-${i}`} />
+              <input className="fl-card-in" value={c.subtitle} onChange={(e) => setCard(i, { subtitle: e.target.value })} placeholder="Short text (optional)" maxLength={WA_CARD_LINE} />
+              {mode === 'link' ? (
+                <div className="fl-row card-btn">
+                  <span className="material-icons fl-row-ic">open_in_new</span>
+                  <div className="fl-card-btn-fields">
+                    <input value={c.buttons[0]?.title || ''} onChange={(e) => setCardButton(i, 0, { title: e.target.value })} placeholder="Button" maxLength={WA_BUTTON_TITLE} />
+                    <input value={c.buttons[0]?.url || ''} onChange={(e) => setCardButton(i, 0, { url: e.target.value })} placeholder="https://…" data-testid={`fl-card-url-${i}`} />
+                  </div>
+                </div>
+              ) : (
+                c.buttons.slice(0, replies).map((b, j) => (
+                  <div className="fl-row card-btn" key={j}>
+                    <span className="material-icons fl-row-ic">reply</span>
+                    <input value={b.title} onChange={(e) => setCardButton(i, j, { title: e.target.value })} placeholder="Button" maxLength={WA_BUTTON_TITLE} data-testid={`fl-card-btn-${i}-${j}`} />
+                  </div>
+                ))
+              )}
+            </div>
+          ))}
+          {cards.length < WA_CARDS_MAX && (
+            <button type="button" className="fl-wa-add" onClick={addWaCard} data-testid="fl-card-add">
+              <span className="material-icons">add</span>
+              <span>Add card</span>
+              <small>{cards.length}/{WA_CARDS_MAX}</small>
+            </button>
+          )}
+          </div>
+          <div className="fl-wa-cards-note">
+            {cards.length} of {WA_CARDS_MAX} cards · scroll sideways to see them all. Square photos look best (1:1).
+          </div>
+          <input ref={cardFileRef} type="file" hidden accept="image/png,image/jpeg,video/mp4" onChange={onCardFile} />
+        </div>
+      )}
+
+      {data.kind === 'carousel' && !wa && (
+        <div className="fl-cards" data-testid="fl-cards">
+          {cards.map((c, i) => (
+            <div className="fl-card" key={i} data-testid={`fl-card-${i}`}>
+              <div className="fl-card-head">
+                <span>Card {i + 1}</span>
+                {cards.length > 1 && (
+                  <button className="fl-row-del" onClick={() => removeCard(i)} title="Remove card">
+                    <span className="material-icons">close</span>
+                  </button>
+                )}
+              </div>
+              <div className="fl-header-tile fl-card-img" onClick={() => pickCardImage(i)} title="Upload / replace image">
+                {c.imageUrl ? (
+                  <img src={c.imageUrl} alt="" />
+                ) : (
+                  <div className="fl-upload-hint">
+                    <span className="material-icons">upload</span>
+                    <span>Card image (optional)</span>
+                  </div>
+                )}
+              </div>
+              <input className="fl-card-in" value={c.title} onChange={(e) => setCard(i, { title: e.target.value })} placeholder="Title" maxLength={80} />
+              <input className="fl-card-in" value={c.subtitle} onChange={(e) => setCard(i, { subtitle: e.target.value })} placeholder="Short text (optional)" maxLength={80} />
+              {c.buttons.map((b, j) => (
+                <div className="fl-row card-btn" key={j}>
+                  <span className="material-icons fl-row-ic">{b.url ? 'open_in_new' : 'reply'}</span>
+                  <div className="fl-card-btn-fields">
+                    <input value={b.title} onChange={(e) => setCardButton(i, j, { title: e.target.value })} placeholder="Button" maxLength={META_BUTTON_TITLE} />
+                    <input value={b.url} onChange={(e) => setCardButton(i, j, { url: e.target.value })} placeholder="https://… (empty = reply)" />
+                  </div>
+                  <button className="fl-row-del" onClick={() => setCard(i, { buttons: c.buttons.filter((_, idx) => idx !== j) })} title="Remove button">
+                    <span className="material-icons">close</span>
+                  </button>
+                </div>
+              ))}
+              {c.buttons.length < META_CARD_BUTTONS && (
+                <button className="fl-add-opt" onClick={() => setCard(i, { buttons: [...c.buttons, { title: `Button ${c.buttons.length + 1}`, url: '' }] })}>
+                  <span className="material-icons">add</span> Add button
+                </button>
+              )}
+            </div>
+          ))}
+          {cards.length < META_CARDS && (
+            <button className="fl-add-opt" onClick={() => patch({ cards: [...cards, newCard()] })} data-testid="fl-card-add">
+              <span className="material-icons">add</span> Add card ({cards.length}/{META_CARDS})
+            </button>
+          )}
+          <input ref={cardFileRef} type="file" hidden accept="image/png,image/jpeg" onChange={onCardFile} />
+        </div>
+      )}
+
+      {data.kind === 'location' && (
+        <>
+          <div className="fl-loc-btn">
+            <span className="material-icons">location_on</span> Send location
+          </div>
+          <div className="fl-rows">
+            <div className="fl-row branch yes">
+              <span className="material-icons fl-row-ic ok">check_circle</span>
+              <span className="fl-branch-label">Valid: the customer shared a location</span>
+            </div>
+            <div className="fl-row branch no">
+              <span className="material-icons fl-row-ic bad">cancel</span>
+              <span className="fl-branch-label">Not valid: they typed something else</span>
+            </div>
+          </div>
+        </>
+      )}
+
+      {data.kind === 'cta' && (
+        <div className="fl-fields">
+          <input value={data.ctaText || ''} onChange={(e) => patch({ ctaText: e.target.value })} placeholder="Button text" maxLength={titleMax} />
+          <input value={data.ctaUrl || ''} onChange={(e) => patch({ ctaUrl: e.target.value })} placeholder="https://…" />
+        </div>
+      )}
+
+      {data.kind === 'call' && (
+        <div className="fl-fields">
+          <input value={data.callText || ''} onChange={(e) => patch({ callText: e.target.value })} placeholder="Button text" maxLength={titleMax} />
+          <input value={data.callPhone || ''} onChange={(e) => patch({ callPhone: e.target.value })} placeholder="+91 98765 43210" />
+        </div>
+      )}
+
+      {data.kind === 'template' &&
+        (() => {
+          const tpl = templates.find((t) => t.name === data.templateName);
+          const comps = tpl?.components || [];
+          const body = comps.find((c) => c.type === 'BODY')?.text || tpl?.bodyText || '';
+          const footer = comps.find((c) => c.type === 'FOOTER')?.text || '';
+          const header = comps.find((c) => c.type === 'HEADER');
+          const tbtns = comps.find((c) => c.type === 'BUTTONS')?.buttons || [];
+          const fmt = String(header?.format || '').toUpperCase();
+          const mediaHeader = fmt === 'IMAGE' || fmt === 'VIDEO' || fmt === 'DOCUMENT';
+          const media = data.templateMediaUrl || tpl?.headerMediaUrl || '';
+          const vars = placeholdersOf(body);
+          const own = data.templateVars || {};
+          const mapped = (n: number) => tpl?.variables?.find((x) => Number(x.index) === n);
+          return (
+            <>
+              <select
+                className="fl-select"
+                value={data.templateName || ''}
+                onChange={(e) => pickTemplate(e.target.value)}
+                data-testid="jn-tpl-select"
+              >
+                <option value="">Choose approved template…</option>
+                {templates.map((t) => (
+                  <option key={t.name} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              {!templates.length && (
+                <p className="jn-out-hint" data-testid="jn-tpl-none">
+                  No approved templates yet. Create one on the Templates page: it can be used here once Meta approves it.
+                </p>
+              )}
+
+              {tpl && (
+                <div className="jn-tpl-meta" data-testid="jn-tpl-meta">
+                  <span><span className="material-icons">translate</span>{waLanguageLabel(tpl.language)}</span>
+                  {tpl.category && <span><span className="material-icons">sell</span>{tpl.category.charAt(0) + tpl.category.slice(1).toLowerCase()}</span>}
+                  {tpl.kind && tpl.kind !== 'standard' && <span><span className="material-icons">view_carousel</span>{tpl.kind === 'lto' ? 'Limited-time offer' : 'Carousel'}</span>}
+                </div>
+              )}
+
+              {tpl && (
+                <div className="fl-tpl-preview">
+                  {mediaHeader &&
+                    (media ? (
+                      fmt === 'IMAGE' ? (
+                        <img className="fl-tpl-media" src={media} alt="" />
+                      ) : fmt === 'VIDEO' ? (
+                        <video className="fl-tpl-media" src={media} muted />
+                      ) : (
+                        <div className="fl-pdf-chip">
+                          <span className="material-icons">picture_as_pdf</span>
+                          <span className="fl-pdf-name">{data.templateFileName || tpl.headerFileName || 'Document.pdf'}</span>
+                        </div>
+                      )
+                    ) : (
+                      <div className="fl-tpl-mediaph">
+                        <span className="material-icons">{fmt === 'VIDEO' ? 'videocam' : fmt === 'DOCUMENT' ? 'picture_as_pdf' : 'image'}</span>
+                      </div>
+                    ))}
+                  {fmt === 'TEXT' && header?.text && (
+                    <div className="fl-tpl-htext">{header.text}</div>
+                  )}
+                  <div className="fl-tpl-body">{body}</div>
+                  {footer && <div className="fl-tpl-footer">{footer}</div>}
+                </div>
+              )}
+
+              {tpl && mediaHeader && (
+                <div className="jn-tpl-media-row">
+                  <button type="button" className="k-btn ghost sm" onClick={() => tplFileRef.current?.click()} data-testid="jn-tpl-media">
+                    <span className="material-icons">upload</span>
+                    {data.templateMediaUrl ? 'Replace' : `Use another ${fmt === 'DOCUMENT' ? 'PDF' : fmt.toLowerCase()} here`}
+                  </button>
+                  {data.templateMediaUrl && (
+                    <button
+                      type="button"
+                      className="k-btn ghost sm"
+                      onClick={() => {
+                        discard(data.templateMediaUrl);
+                        patch({ templateMediaUrl: '', templateFileName: '' });
+                      }}
+                    >
+                      Use the template’s own
+                    </button>
+                  )}
+                  {!media && <span className="jn-tpl-warn">This template has no stored {fmt === 'DOCUMENT' ? 'PDF' : fmt.toLowerCase()}: upload one, or WhatsApp refuses it.</span>}
+                  <input
+                    ref={tplFileRef}
+                    type="file"
+                    hidden
+                    accept={fmt === 'IMAGE' ? 'image/png,image/jpeg' : fmt === 'VIDEO' ? 'video/mp4' : 'application/pdf'}
+                    onChange={onTemplateFile}
+                  />
+                </div>
+              )}
+
+              {tpl && vars.length > 0 && tpl.category !== 'AUTHENTICATION' && (
+                <div className="jn-tpl-vars" data-testid="jn-tpl-vars">
+                  <div className="jn-tpl-vars-head">Values for the template</div>
+                  {vars.map((n) => {
+                    const m = mapped(n);
+                    const hint = m?.source && m.source !== 'other' ? m.source.replace(/_/g, ' ') : m?.name || '';
+                    return (
+                      <label className="jn-tpl-var" key={n}>
+                        <code>{`{{${n}}}`}</code>
+                        <input
+                          value={own[String(n)] || ''}
+                          onChange={(e) => patch({ templateVars: { ...own, [String(n)]: e.target.value } })}
+                          placeholder={hint ? `Template's value: ${hint}` : 'e.g. {{name}}'}
+                          data-testid={`jn-tpl-var-${n}`}
+                        />
+                      </label>
+                    );
+                  })}
+                  <p className="jn-out-hint">
+                    Leave a value empty to use the template’s own (set on the Templates page). You can use{' '}
+                    <code>{'{{name}}'}</code>, <code>{'{{business_name}}'}</code>, <code>{'{{today}}'}</code> and the choices made earlier in the journey
+                    (<code>{'{{category}}'}</code>, <code>{'{{member}}'}</code>, <code>{'{{appointment_date}}'}</code>, <code>{'{{order_id}}'}</code>…).
+                  </p>
+                </div>
+              )}
+
+              {tbtns.length > 0 && (
+                <div className="fl-tbtns">
+                  {tbtns.map((b, i) =>
+                    b.type === 'QUICK_REPLY' ? (
+                      // Reply buttons continue the flow → each gets an output port.
+                      <div className="fl-tbtn" key={i}>
+                        <span className="material-icons">reply</span>
+                        <span>{b.text}</span>
+                      </div>
+                    ) : (
+                      // URL / call buttons are terminal (open link / dial) → no port.
+                      <div className="fl-tbtn" key={i}>
+                        <span className="material-icons">{tmplBtnIcon(b.type)}</span>
+                        <span>{b.text}</span>
+                      </div>
+                    ),
+                  )}
+                </div>
+              )}
+            </>
+          );
+        })()}
+
+      {data.kind === 'catalog' && (
+        <div className="fl-fields" data-testid="jn-catalog-fields">
+          <span className="fl-seg-label">Products to show</span>
+          <select className="fl-select" value={data.catalogCategory || ''} onChange={(e) => patch({ catalogCategory: e.target.value })} data-testid="jn-catalog-cat">
+            <option value="">The {(v?.categoryLabel || 'category').toLowerCase()} the customer chose (else all)</option>
+            <option value="*">All products</option>
+            {categoryNames.map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+          <div className="fl-restart jn-start-note">
+            <span className="material-icons">storefront</span>
+            <div>
+              Sends your WhatsApp catalog. The customer adds products to the cart and sends it: connect <b>Cart sent</b> to{' '}
+              <b>Place order</b>. Without a connected catalog (or on the shared test number) the products go as a text list.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(data.kind === 'categories' || data.kind === 'members' || data.kind === 'slots') && (
+        <div className="fl-fields">
+          <span className="fl-seg-label">List button</span>
+          <input
+            className="fl-list-title"
+            value={data.listTitle || ''}
+            onChange={(e) => patch({ listTitle: e.target.value })}
+            placeholder={data.kind === 'slots' ? 'Pick a day' : 'Choose'}
+            maxLength={20}
+            data-testid="jn-list-title"
+          />
+        </div>
+      )}
+      {data.kind === 'categories' && (
+        <div className="fl-restart jn-start-note" data-testid="jn-note">
+          <span className="material-icons">category</span>
+          <div>
+            Lists your {(v?.categoryPlural || 'categories').toLowerCase()} (up to 10) from the {v?.categoryPlural || 'Categories'} page. The choice is{' '}
+            <code>{'{{category}}'}</code>; a {(v?.memberLabel || 'members').toLowerCase()} list or a catalog after it shows only that{' '}
+            {(v?.categoryLabel || 'category').toLowerCase()}.
+          </div>
+        </div>
+      )}
+      {data.kind === 'members' && (
+        <div className="fl-restart jn-start-note" data-testid="jn-note">
+          <span className="material-icons">groups</span>
+          <div>
+            Lists your {(v?.memberLabel || 'members').toLowerCase()} (up to 10) from the {v?.memberLabel || 'Members'} page, with their fee. After a{' '}
+            {(v?.categoryPlural || 'categories').toLowerCase()} block, only the chosen {(v?.categoryLabel || 'category').toLowerCase()}. The choice is{' '}
+            <code>{'{{member}}'}</code>.
+          </div>
+        </div>
+      )}
+      {data.kind === 'slots' && (
+        <>
+          <div className="fl-seg-row">
+            <span className="fl-seg-label">Days ahead</span>
+            <div className="fl-seg" role="radiogroup" aria-label="Days ahead">
+              {[3, 7, 14].map((n) => (
+                <button type="button" key={n} className={`fl-seg-btn${(data.days || 7) === n ? ' on' : ''}`} onClick={() => patch({ days: n })} aria-pressed={(data.days || 7) === n} data-testid={`jn-days-${n}`}>
+                  {n} days
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="fl-restart jn-start-note" data-testid="jn-note">
+            <span className="material-icons">event</span>
+            <div>
+              Asks for a day (only days with free times), then a free time, for the {(v?.memberSingular || 'member').toLowerCase()} chosen before (or your only one).
+              Times follow their hours, leave and bookings. The choice is <code>{'{{appointment_date}}'}</code> at <code>{'{{appointment_slot}}'}</code>.
+            </div>
+          </div>
+        </>
+      )}
+      {data.kind === 'book' && (
+        <>
+          <span className="fl-seg-label">If the time can’t be booked</span>
+          <textarea
+            className="fl-node-text"
+            value={data.failText || ''}
+            onChange={(e) => patch({ failText: e.target.value })}
+            placeholder="Sorry, that time was just taken…"
+            rows={2}
+            data-testid="jn-fail-text"
+          />
+          <div className="fl-restart jn-start-note" data-testid="jn-note">
+            <span className="material-icons">event_available</span>
+            <div>
+              Books the chosen time: it appears on {v?.ordersLabel || 'Appointments'} and your team is notified. The time is checked again first, so two
+              customers never get the last place. <b>Booked</b> and <b>Not booked</b> are its outputs.
+            </div>
+          </div>
+        </>
+      )}
+      {data.kind === 'order' && (
+        <div className="fl-restart jn-start-note" data-testid="jn-note">
+          <span className="material-icons">receipt_long</span>
+          <div>
+            Saves the cart the customer sent (after a Catalog block) as an order on {v?.ordersLabel || 'Orders'}, with its reference{' '}
+            <code>{'{{order_id}}'}</code>, then sends this confirmation.
+          </div>
+        </div>
+      )}
+      {data.kind === 'offers' && (
+        <div className="fl-restart jn-start-note" data-testid="jn-note">
+          <span className="material-icons">local_offer</span>
+          <div>Sends your live offers from the Offers page (up to 5), with their offer prices and end dates.</div>
+        </div>
+      )}
+      {(() => {
+        const hint = data.kind === 'carousel' && wa
+          ? mode === 'link'
+            ? 'Link buttons open the website; the block continues to the next one straight away.'
+            : 'Each card’s buttons get their own output on the block: connect what happens when the customer taps one.'
+          : OUTPUT_HINT[data.kind];
+        return hint ? <p className="jn-out-hint">{hint}</p> : null;
+      })()}
+    </div>
+  );
+}
+
+/** Where a block's connections come out, said in its pop-up. */
+const OUTPUT_HINT: Partial<Record<Kind, string>> = {
+  extender: 'Each number is an output on the block. Connect a block to each; they go out in order, 1 first.',
+  reply: 'Each button gets its own output on the block: connect it to what happens when the customer taps it.',
+  list: 'Each option gets its own output on the block.',
+  quick: 'Each quick reply gets its own output on the block.',
+  location: 'The block has two outputs: Valid (a location was shared) and Not valid (anything else).',
+  carousel: 'Reply buttons (without a link) get their own outputs; “Next” continues after the cards.',
+  template: 'Quick-reply buttons of the template get their own outputs; “Next” continues right away.',
+  catalog: '“Cart sent” continues when the customer sends their cart.',
+  categories: '“Chosen” continues after the customer picks one.',
+  members: '“Chosen” continues after the customer picks one.',
+  slots: 'Two outputs: Time chosen, and No free time (nothing free in those days).',
+  book: 'Two outputs: Booked, and Not booked (the time was taken, or nothing was chosen).',
+};
+
+/** The {{n}} placeholders a template body uses, in order. */
+const placeholdersOf = (body: string) =>
+  [...new Set([...String(body || '').matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => Number(m[1])))].sort((a, b) => a - b);
+
+/** All numbered {{1}}, {{2}}… placeholders used anywhere in a journey block's text fields. */
+function nodePlaceholderIndexes(data: WaData): number[] {
+  if (data.kind === 'template') return [];
+  const texts: string[] = [
+    data.text || '',
+    data.failText || '',
+    data.ctaText || '',
+    data.callText || '',
+    data.listTitle || '',
+    ...(data.buttons || []),
+    ...(data.options || []),
+    ...(data.cards || []).flatMap((c) => [c.title || '', c.subtitle || '', ...(c.buttons || []).map((b) => b.title || '')]),
+  ];
+  return placeholdersOf(texts.join('\n'));
+}
+
+// ---------------------------------------------------------------------------
+// The block on the canvas (n8n style): icon, name and a one-line summary;
+// branching blocks list their labelled outputs on the right, each with its
+// own port. Clicking it opens BlockEditor. A free output shows a "+" that adds
+// the next block already connected.
+// ---------------------------------------------------------------------------
+interface Output {
+  /** React Flow handle id ('' = the default output). */
+  id: string;
+  label: string;
+  bad?: boolean;
+}
+
+/** The outputs a block has, in order. */
+function outputsOf(data: WaData, templates: TemplateItem[]): Output[] {
+  switch (data.kind) {
+    case 'reply': {
+      const seen = new Set<string>();
+      return (data.buttons || []).map((b, i) => {
+        const t = String(b || '').trim().toLowerCase();
+        const dup = !!t && seen.has(t);
+        seen.add(t);
+        return { id: `btn-${i}`, label: b || `Button ${i + 1}`, bad: dup || !t };
+      });
+    }
+    case 'list':
+    case 'quick':
+      return (data.options || []).map((o, i) => ({ id: `opt-${i}`, label: o || `Option ${i + 1}`, bad: !String(o || '').trim() }));
+    case 'location':
+      return [{ id: 'loc-yes', label: 'Valid' }, { id: 'loc-no', label: 'Not valid' }];
+    case 'carousel': {
+      // WhatsApp: quick replies branch (the chat waits for a tap), links don't.
+      if (data.waButtons === 'link') return [{ id: '', label: '' }];
+      if (data.waButtons === 'reply') {
+        const n = waReplies(data);
+        const many = (data.cards || []).length > 1;
+        return (data.cards || []).flatMap((c, i) => Array.from({ length: n }, (_, j) => ({
+          id: `card-${i}-${j}`,
+          label: `${many ? `Card ${i + 1} · ` : ''}${c.buttons[j]?.title || 'Button'}`,
+          bad: !String(c.buttons[j]?.title || '').trim(),
+        })));
+      }
+      const out: Output[] = [];
+      (data.cards || []).forEach((c, i) => c.buttons.forEach((b, j) => {
+        if (!b.url) out.push({ id: `card-${i}-${j}`, label: `${(data.cards || []).length > 1 ? `Card ${i + 1} · ` : ''}${b.title || 'Button'}` });
+      }));
+      return out.length ? [...out, { id: '', label: 'Next' }] : [{ id: '', label: '' }];
+    }
+    case 'template': {
+      const tpl = templates.find((t) => t.name === data.templateName);
+      const btns = (tpl?.components || []).find((c) => c.type === 'BUTTONS')?.buttons || [];
+      const out: Output[] = [];
+      btns.forEach((b, i) => {
+        if (b.type === 'QUICK_REPLY') out.push({ id: `tbtn-${i}`, label: b.text || `Button ${i + 1}` });
+      });
+      // With quick replies the journey waits for a tap: only the button ports
+      // (along the bottom), no "Next" on the right. Without any, the plain next.
+      return out.length ? out : [{ id: '', label: '' }];
+    }
+    case 'extender':
+      return Array.from({ length: extSlots(data) }, (_, i) => ({ id: `ext-${i}`, label: String(i + 1) }));
+    case 'catalog':
+      return [{ id: 'cart', label: 'Cart sent' }];
+    case 'categories':
+    case 'members':
+      return [{ id: 'pick', label: 'Chosen' }];
+    case 'slots':
+      return [{ id: 'pick', label: 'Time chosen' }, { id: 'none', label: 'No free time' }];
+    case 'book':
+      return [{ id: 'ok', label: 'Booked' }, { id: 'full', label: 'Not booked' }];
+    case 'end':
+    case 'restart':
+      return [];
+    default:
+      return [{ id: '', label: '' }];
+  }
+}
+
+// The first line of a text, as plain words (no pasted markup).
+const firstLine = (s?: string) =>
+  String(s || '').replace(/<[^>]*>?/g, ' ').split('\n').map((x) => x.replace(/\s+/g, ' ').trim()).find(Boolean) || '';
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** The block's one-line summary under its name. */
+function summaryOf(data: WaData, channel: JourneyChannel, v?: VerticalConfig): string {
+  const media = data.header && data.header !== 'none' ? `${HEADER_LABEL[data.header]}${data.headerMediaUrl ? '' : ' (not uploaded)'}` : '';
+  const text = firstLine(data.text);
+  switch (data.kind) {
+    case 'start': return `When a customer messages you on ${CHANNEL_NAME[channel]}`;
+    case 'message': return [media, text].filter(Boolean).join(' · ') || 'Empty message';
+    // Branching blocks: what kind of question, not its text (that's in the pop-up);
+    // the answers are the labelled outputs underneath.
+    case 'reply': return `${media ? `${media} · ` : ''}${count((data.buttons || []).length, 'button', 'buttons')}`;
+    case 'cta': return [data.ctaText || 'Button', data.ctaUrl || 'link not set'].join(' → ');
+    case 'call': return [data.callText || 'Call', data.callPhone || 'number not set'].join(' · ');
+    case 'location': return 'Asks for a location';
+    case 'list': return `${data.listTitle || 'Menu'} · ${count((data.options || []).length, 'option', 'options')}`;
+    case 'template': return data.templateName || 'Template not chosen';
+    case 'quick': return count((data.options || []).length, 'quick reply', 'quick replies');
+    case 'carousel': return `${count((data.cards || []).length, 'card', 'cards')}${data.waButtons ? ` · ${data.waButtons === 'link' ? 'links' : 'quick replies'}` : ''}`;
+    case 'extender': return `Sends ${extSlots(data)} messages in order`;
+    case 'end': return 'Ends the journey';
+    case 'restart': return 'Back to Start';
+    case 'catalog':
+      return data.catalogCategory === '*' ? 'All products' : data.catalogCategory ? `Products in ${data.catalogCategory}` : `Products of the chosen ${(v?.categoryLabel || 'category').toLowerCase()}`;
+    case 'categories': return `Lists your ${(v?.categoryPlural || 'categories').toLowerCase()}`;
+    case 'members': return `Lists your ${(v?.memberLabel || 'members').toLowerCase()}`;
+    case 'slots': return `Free times, next ${data.days || 7} days`;
+    case 'book': return `Books the chosen time on ${v?.ordersLabel || 'Appointments'}`;
+    case 'order': return `Saves the cart on ${v?.ordersLabel || 'Orders'}`;
+    case 'offers': return 'Sends your live offers';
+    default: return '';
+  }
+}
+
+/** What would stop the block from sending (shown as a "!" on it). */
+function problemOf(data: WaData, outputs: Output[]): string {
+  const text = String(data.text || '').trim();
+  switch (data.kind) {
+    case 'message': return !text && !(data.header && data.header !== 'none' && data.headerMediaUrl) ? 'Add a message or a file' : '';
+    case 'reply':
+      if (!text) return 'Add the message text';
+      return outputs.some((o) => o.bad) ? 'Each button needs its own title' : '';
+    case 'quick': return !text ? 'Add the message text' : outputs.some((o) => o.bad) ? 'Every quick reply needs a title' : '';
+    case 'list': return !text ? 'Add the message text' : outputs.some((o) => o.bad) ? 'Every option needs a title' : '';
+    case 'cta': return !String(data.ctaUrl || '').trim() ? 'Add the link' : '';
+    case 'call': return !String(data.callPhone || '').trim() ? 'Add the phone number' : '';
+    case 'template': return !data.templateName ? 'Choose a template' : '';
+    case 'book': return !text ? 'Add the confirmation message' : '';
+    case 'order': return !text ? 'Add the confirmation message' : '';
+    default: return '';
+  }
+}
+
+/** The canvas gives the blocks what they need beyond their own data. */
+interface CanvasApi {
+  /** `${nodeId}|${handleId}` of every output already connected. */
+  connected: Set<string>;
+  /** `${nodeId}|top` / `${nodeId}|bottom`: a connection enters the block there. */
+  inUsed: Set<string>;
+  addFrom: (nodeId: string, handle: string) => void;
+}
+const CanvasCtx = createContext<CanvasApi>({ connected: new Set(), inUsed: new Set(), addFrom: () => {} });
+
+/** A block's outputs for the layout and the input sides, with where each comes out (as WaNode draws them). */
+function waLayoutPorts(n: Node<WaData> | undefined, templates: TemplateItem[], connected: Set<string>): LayoutPort[] {
+  if (!n?.data) return [];
+  const outputs = outputsOf(n.data, templates);
+  const branches = outputs.filter((o) => o.label && o.id);
+  const next = outputs.find((o) => !o.id);
+  const single = !next && branches.length === 1 && n.data.kind !== 'template';
+  return [
+    ...(next ? [{ id: '', side: 'right' as const }] : []),
+    ...branches.map((o) => ({ id: o.id, side: single ? ('right' as const) : ('bottom' as const) })),
+  ].map((p) => ({ ...p, free: !connected.has(`${n.id}|${p.id}`) }));
+}
+
+/**
+ * One output of a block. Connected: a port on the block's edge. Free: a dot on
+ * the edge, a short line and a "+" that *is* the port, so the "+" can be
+ * clicked (pick the next block) or dragged onto a block to connect it.
+ */
+function OutPort({ nodeId, handle, side }: { nodeId: string; handle: string; side: 'right' | 'bottom' }) {
+  const { connected, addFrom } = useContext(CanvasCtx);
+  const position = side === 'right' ? Position.Right : Position.Bottom;
+  const id = handle || undefined;
+  if (connected.has(`${nodeId}|${handle}`)) {
+    return <Handle type="source" id={id} position={position} className={`jn-handle out ${side}`} />;
+  }
+  return (
+    <>
+      <span className={`jn-dot ${side}`} aria-hidden="true" />
+      <span className={`jn-stub ${side}`}>
+        <span className="jn-stub-line" />
+        <Handle
+          type="source"
+          id={id}
+          position={position}
+          className="jn-plus"
+          title="Click to add the next block, or drag onto a block to connect it"
+          onClick={(e) => {
+            e.stopPropagation();
+            addFrom(nodeId, handle);
+          }}
+          data-testid="jn-plus"
+        >
+          <span className="material-icons" aria-hidden="true">add</span>
+        </Handle>
+      </span>
+    </>
+  );
+}
+
+function WaNode({ id, data, selected }: NodeProps<WaData>) {
+  const templates = useContext(TemplatesCtx);
+  const channel = useContext(ChannelCtx);
+  const vertical = useContext(VerticalCtx);
+  const k = KINDS[data.kind] || KINDS.message;
+  const outputs = outputsOf(data, templates);
+  // Branches (buttons, options, Valid / Not valid) come out of the bottom edge,
+  // labelled, like n8n's sub-connections; the plain "next" stays on the right.
+  const allBranches = outputs.filter((o) => o.label && o.id);
+  const next = outputs.find((o) => !o.id);
+  // A single answer (one reply button…) and nothing else: it comes out of the
+  // right side, labelled there, like a plain "next". Several go along the bottom.
+  // A template's quick replies always stay along the bottom (they're its buttons).
+  const side = !next && allBranches.length === 1 && data.kind !== 'template' ? allBranches[0] : null;
+  const branches = side ? [] : allBranches;
+  const isStart = data.kind === 'start';
+  // A port turns from "+" into a dot when connected (and back): React Flow
+  // must measure the block's ports again, or the line starts from the old spot.
+  const { connected, inUsed } = useContext(CanvasCtx);
+  const { saveable } = useMedia();
+  // A data block from a plan the business no longer has (added in the trial).
+  const featureLock = useFeatureLock();
+  const needs = FEATURE_OF_KIND[data.kind];
+  const planLock = needs ? featureLock(needs) : null;
+  const problem = planLock
+    ? `Needs the ${TIER_NAMES[planLock.tier]} plan: this block doesn’t run on your plan`
+    : data.kind === 'extender' && !outputs.some((o) => connected.has(`${id}|${o.id}`))
+    ? 'Connect a block to number 1'
+    : data.kind === 'carousel' && channel === 'whatsapp'
+      ? waCarouselProblem(data, saveable)
+      : problemOf(data, outputs);
+  const portsKey = outputs.map((o) => `${o.id}:${connected.has(`${id}|${o.id}`) ? 1 : 0}`).join(',');
+  const updateInternals = useUpdateNodeInternals();
+  useEffect(() => {
+    updateInternals(id);
+  }, [portsKey, id, updateInternals]);
+  return (
+    <div
+      className={`jn-node kind-${data.kind}${selected ? ' selected' : ''}${problem ? ' warn' : ''}${branches.length ? ' has-ports' : ''}`}
+      style={{ ['--k' as string]: k.color, ...(branches.length ? { minWidth: Math.max(210, branches.length * 92 + 24) } : {}) }}
+      data-testid="jn-node"
+      data-kind={data.kind}
+      title="Click to edit"
+    >
+      {/* The left input first: a connection without a named input uses it. */}
+      {!isStart && <Handle type="target" position={Position.Left} className="jn-handle in" />}
+      {/* Used when the block sits under (or over) the one leading to it. */}
+      {!isStart && <Handle type="target" id={IN_HANDLE.top!} position={Position.Top} className={`jn-handle in top${inUsed.has(`${id}|top`) ? ' used' : ''}`} />}
+      {!isStart && !branches.length && (
+        <Handle type="target" id={IN_HANDLE.bottom!} position={Position.Bottom} className={`jn-handle in bottom${inUsed.has(`${id}|bottom`) ? ' used' : ''}`} />
+      )}
+      {isStart && <span className="jn-bolt material-icons" aria-hidden="true">bolt</span>}
+      <div className="jn-main">
+        <span className="jn-ic"><span className="material-icons">{k.icon}</span></span>
+        <div className="jn-txt">
+          <div className="jn-title">{titleOf(data.kind, channel, vertical)}</div>
+          <div className="jn-sub" data-testid="jn-sub">{summaryOf(data, channel, vertical)}</div>
+        </div>
+        {problem && (
+          <span className="jn-warn material-icons" title={problem} aria-label={problem} data-testid="jn-warn">error</span>
+        )}
+      </div>
+      {next && <OutPort nodeId={id} handle="" side="right" />}
+      {side && (
+        <span className={`jn-side${side.bad ? ' bad' : ''}`} data-testid="jn-out" data-handle={side.id}>
+          <OutPort nodeId={id} handle={side.id} side="right" />
+          <span className="jn-out-label">{side.label}</span>
+        </span>
+      )}
+      {branches.length > 0 && (
+        <div className="jn-ports">
+          {branches.map((o) => (
+            <div className={`jn-port${o.bad ? ' bad' : ''}`} key={o.id} data-testid="jn-out" data-handle={o.id}>
+              <OutPort nodeId={id} handle={o.id} side="bottom" />
+              <span className="jn-out-label">{o.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const nodeTypes = { wa: WaNode };
+
+const initialNodes: Node<WaData>[] = [
+  { id: 'start', type: 'wa', position: { x: 60, y: 180 }, data: { kind: 'start' } },
+  {
+    id: 'welcome',
+    type: 'wa',
+    position: { x: 320, y: 120 },
+    data: { kind: 'message', header: 'image', text: 'Hi 👋 Welcome! How can we help?' },
+  },
+];
+const initialEdges: Edge[] = [
+  { id: 'e-start-welcome', source: 'start', target: 'welcome', animated: true },
+];
+/** Instagram / Messenger starter: Start → a welcome text (no media to upload first). */
+const seedNodesFor = (channel: JourneyChannel): Node<WaData>[] => (channel === 'whatsapp'
+  ? initialNodes
+  : [
+    initialNodes[0],
+    { ...initialNodes[1], data: { kind: 'message', header: 'none', text: 'Hi 👋 Welcome! How can we help?' } },
+  ]);
+
+let idCounter = 100;
+
+type PaletteItem = {
+  kind: Kind;
+  count?: number;
+  header?: HeaderType;
+  label: string;
+  icon?: string;
+  /** A heading drawn above this item in the palette. */
+  group?: string;
+};
+
+/** The plan feature a data block needs (its page). */
+const FEATURE_OF_KIND: Partial<Record<Kind, PlanFeature>> = {
+  catalog: 'catalog',
+  order: 'orders',
+  offers: 'offers',
+  categories: 'categories',
+  members: 'members',
+  slots: 'members',
+  book: 'orders',
+};
+
+/**
+ * The blocks for the business's own data, for the pages its category has:
+ * a shop gets Categories, Catalog, Place order and Offers; a clinic gets its
+ * Specialisations, Doctors, Date & time and Book appointment. "Other" (every
+ * page) gets them all.
+ */
+function dataPalette(v?: VerticalConfig): PaletteItem[] {
+  const shows = (p: CrmView) => !v || v.showsPage(p);
+  const out: PaletteItem[] = [];
+  if (shows('categories')) out.push({ kind: 'categories', label: v?.categoryPlural || 'Categories' });
+  if (shows('catalog')) out.push({ kind: 'catalog', label: 'Catalog' });
+  if (shows('catalog') && shows('orders')) out.push({ kind: 'order', label: 'Place order' });
+  if (shows('offers')) out.push({ kind: 'offers', label: 'Offers' });
+  if (shows('members')) {
+    out.push({ kind: 'members', label: v?.memberLabel || 'Members' });
+    out.push({ kind: 'slots', label: 'Date & time' });
+    if (shows('orders')) out.push({ kind: 'book', label: bookTitle(v) });
+  }
+  if (out.length) out[0] = { ...out[0], group: 'Your business' };
+  return out;
+}
+const WHATSAPP_PALETTE: PaletteItem[] = [
+  { kind: 'message', label: 'Message' },
+  { kind: 'reply', count: 1, label: '1 reply button' },
+  { kind: 'reply', count: 2, label: '2 reply buttons' },
+  { kind: 'reply', count: 3, label: '3 reply buttons' },
+  { kind: 'cta', label: 'CTA URL' },
+  { kind: 'call', label: 'Call button' },
+  { kind: 'location', label: 'Ask location' },
+  { kind: 'list', label: 'List menu' },
+  { kind: 'carousel', count: 2, label: 'Carousel' },
+  { kind: 'template', label: 'Template' },
+  { kind: 'extender', count: 3, label: 'Extender' },
+  { kind: 'restart', label: 'Start again' },
+  { kind: 'end', label: 'End' },
+];
+// What Meta's Send API can send on Instagram / Messenger: the same message
+// types as a CRM chat (text, photo, video, audio, file) plus buttons, quick
+// replies and cards. No list menus, location requests or templates there.
+const metaPalette = (channel: 'instagram' | 'messenger'): PaletteItem[] => [
+  { kind: 'message', label: 'Text' },
+  { kind: 'message', header: 'image', label: 'Image', icon: 'image' },
+  { kind: 'message', header: 'video', label: 'Video', icon: 'videocam' },
+  { kind: 'message', header: 'audio', label: 'Audio', icon: 'mic' },
+  { kind: 'message', header: 'pdf', label: 'File', icon: 'attach_file' },
+  { kind: 'reply', count: 1, label: '1 reply button' },
+  { kind: 'reply', count: 2, label: '2 reply buttons' },
+  { kind: 'reply', count: 3, label: '3 reply buttons' },
+  { kind: 'quick', label: 'Quick replies' },
+  { kind: 'cta', label: 'Link button' },
+  ...(channel === 'messenger' ? [{ kind: 'call' as Kind, label: 'Call button' }] : []),
+  { kind: 'carousel', count: 1, label: 'Card', icon: 'crop_landscape' },
+  { kind: 'carousel', count: 2, label: 'Carousel' },
+  { kind: 'extender', count: 3, label: 'Extender' },
+  { kind: 'restart', label: 'Start again' },
+  { kind: 'end', label: 'End' },
+];
+/**
+ * Where the journey begins. Every journey comes with one (it has no ✕); it's
+ * offered here only to put it back if it was removed (e.g. with Backspace).
+ */
+const START_ITEM: PaletteItem = { kind: 'start', label: 'Start' };
+const paletteFor = (channel: JourneyChannel, hasStart: boolean, v?: VerticalConfig): PaletteItem[] => [
+  ...(hasStart ? [] : [START_ITEM]),
+  // The business's data blocks are WhatsApp only (lists, the catalog).
+  ...(channel === 'whatsapp' ? [...WHATSAPP_PALETTE, ...dataPalette(v)] : metaPalette(channel)),
+];
+const testIdOf = (label: string) => label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+
+interface FlowCanvasProps {
+  nodes: Node<WaData>[];
+  edges: Edge[];
+  onNodesChange: OnNodesChange;
+  onEdgesChange: OnEdgesChange;
+  setNodes: Dispatch<SetStateAction<Node<WaData>[]>>;
+  setEdges: Dispatch<SetStateAction<Edge[]>>;
+  /** Changes when a whole journey was put on the canvas (fit it into view). */
+  fitSignal?: number;
+}
+
+/** n8n-style connections: solid curves with an arrow, the channel colour when selected. */
+const EDGE_GREY = '#9aa3ad';
+const edgeLook = (e: Edge, stroke: string): Edge => ({
+  ...e,
+  type: 'default',
+  animated: false,
+  style: { stroke: e.selected ? stroke : EDGE_GREY, strokeWidth: e.selected ? 2.6 : 2 },
+  markerEnd: { type: MarkerType.ArrowClosed, color: e.selected ? stroke : EDGE_GREY, width: 16, height: 16 },
+});
+
+/** One kind of block per choice in the "+" menu (the palette, without Start). */
+function nextId(nds: Node<WaData>[]): string {
+  let id = `n${idCounter++}`;
+  while (nds.some((n) => n.id === id)) id = `n${idCounter++}`;
+  return id;
+}
+
+/** "Organize": the journey laid out left to right (see organizeLayout). */
+function organizeJourney(nodes: Node<WaData>[], edges: Edge[], templates: TemplateItem[]): Node<WaData>[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const connected = new Set(edges.map((e) => `${e.source}|${e.sourceHandle || ''}`));
+  const pos = organizeLayout(
+    nodes.map((n) => ({ id: n.id, width: n.width || 220, height: n.height || 60 })),
+    edges,
+    (id) => waLayoutPorts(byId.get(id), templates, connected),
+    nodes.find((n) => n.data?.kind === 'start')?.id,
+  );
+  return nodes.map((n) => ({ ...n, position: pos.get(n.id) || n.position }));
+}
+
+const SAMPLE_SOURCE_VALUES: Record<string, string> = {
+  customer_name: 'Thabo',
+  customer_phone: '+27 72 893 2456',
+  business_name: 'Whatcha Solutions',
+  order_id: 'ORD-1042',
+  order_status: 'Confirmed',
+  order_total: 'R1,499',
+  order_date: '15 Nov 2026',
+  order_items: '2 × Starter Plan',
+  payment_status: 'Paid',
+  payment_method: 'Card / WhatsApp Pay',
+  delivery_address: 'Sandton, Johannesburg',
+  today: '15 Nov 2026',
+  member_name: 'Dr. Sharma',
+  appointment_date: 'Mon, 16 Nov 2026',
+  appointment_slot: '10:30 AM',
+};
+
+/** The pop-up a block opens in: its settings, Delete and Continue/Done (2-step variable mapping when {{1}}, {{2}}… are present). */
+function BlockEditor({ node, onClose, onDelete }: { node: Node<WaData>; onClose: () => void; onDelete: () => void }) {
+  const rf = useReactFlow();
+  const k = KINDS[node.data.kind];
+  const channel = useContext(ChannelCtx);
+  const vertical = useContext(VerticalCtx);
+  const sources = useContext(SourcesCtx);
+  const [step, setStep] = useState<'edit' | 'vars'>('edit');
+  const [otherDrafts, setOtherDrafts] = useState<Record<number, string>>({});
+  const indexes = useMemo(() => nodePlaceholderIndexes(node.data), [node.data]);
+
+  useEffect(() => {
+    setStep('edit');
+    setOtherDrafts({});
+  }, [node.id]);
+
+  useEffect(() => {
+    if (step === 'vars' && indexes.length === 0) setStep('edit');
+  }, [step, indexes.length]);
+
+  const variables = node.data.variables || [];
+  const varFor = (index: number) => variables.find((v) => Number(v.index) === index);
+
+  const setVariable = (index: number, patch: Partial<TemplateVariable>) => {
+    rf.setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id !== node.id) return n;
+        const list = [...((n.data as WaData).variables || [])];
+        const found = list.find((v) => Number(v.index) === index);
+        const next = found
+          ? list.map((v) => (Number(v.index) === index ? { ...v, ...patch } : v))
+          : [...list, { index, source: '', ...patch }];
+        return { ...n, data: { ...n.data, variables: next } };
+      }),
+    );
+  };
+
+  const flushOtherDrafts = () => {
+    const entries = Object.entries(otherDrafts);
+    if (!entries.length) return;
+    rf.setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id !== node.id) return n;
+        let list = [...((n.data as WaData).variables || [])];
+        for (const [idxStr, rawText] of entries) {
+          const idx = Number(idxStr);
+          const text = String(rawText || '').trim();
+          if (!text) continue;
+          const found = list.find((v) => Number(v.index) === idx);
+          if (found) {
+            list = list.map((v) => (Number(v.index) === idx ? { ...v, name: text } : v));
+          } else {
+            list.push({ index: idx, source: 'other', name: text });
+          }
+        }
+        return { ...n, data: { ...n.data, variables: list } };
+      }),
+    );
+  };
+
+  const unmapped = indexes.filter((i) => {
+    const v = varFor(i);
+    if (!v?.source && !v?.fallback?.trim()) return true;
+    const nameVal = v?.name?.trim() || otherDrafts[i]?.trim() || v?.fallback?.trim();
+    if (v?.source === 'other' && !nameVal) return true;
+    return false;
+  });
+
+  const previewText = useMemo(() => {
+    const raw = String(node.data.text || '').trim();
+    if (!raw) return '';
+    return raw.replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, numStr) => {
+      const idx = Number(numStr);
+      const v = varFor(idx);
+      const draftName = otherDrafts[idx]?.trim();
+      if (v?.source === 'other') {
+        return v.fallback?.trim() || draftName || v.name?.trim() || `{{${idx}}}`;
+      }
+      if (v?.source) {
+        return SAMPLE_SOURCE_VALUES[v.source] || v.fallback?.trim() || `[${sources.find((s) => s.key === v.source)?.label || v.source}]`;
+      }
+      return v?.fallback?.trim() || `{{${idx}}}`;
+    });
+  }, [node.data.text, variables, otherDrafts, sources]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="jn-modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()} data-testid="jn-editor-backdrop">
+      <div className="jn-modal" role="dialog" aria-modal="true" aria-label={`${titleOf(node.data.kind, channel, vertical)} block`} data-testid="jn-editor" style={{ ['--k' as string]: k.color }}>
+        <header className="jn-modal-head">
+          <span className="jn-ic"><span className="material-icons">{k.icon}</span></span>
+          <div className="jn-modal-titles">
+            <h3>
+              {titleOf(node.data.kind, channel, vertical)}
+              {step === 'vars' ? ' · Values' : ''}
+            </h3>
+            <p>
+              {step === 'vars'
+                ? `Set what ${indexes.map((i) => `{{${i}}}`).join(', ')} should show when this block sends`
+                : summaryOf(node.data, channel, vertical)}
+            </p>
+          </div>
+          <button type="button" className="jn-modal-x" onClick={onClose} aria-label="Close">
+            <span className="material-icons">close</span>
+          </button>
+        </header>
+        <div className="jn-modal-body">
+          {step === 'edit' ? (
+            <NodeFields id={node.id} data={node.data} />
+          ) : (
+            <div className="jn-vars-step" data-testid="jn-vars-step">
+              {previewText && (
+                <div
+                  className="fl-tpl-preview"
+                  style={{
+                    marginBottom: 14,
+                    padding: '10px 13px',
+                    borderRadius: 10,
+                    background: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    fontSize: 13.5,
+                    color: '#0f172a',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: '#15803d', marginBottom: 4 }}>
+                    Message preview
+                  </div>
+                  {previewText}
+                </div>
+              )}
+              <div className="k-field" style={{ marginBottom: 0 }}>
+                <label className="k-label" style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 13.5, color: '#0f172a' }}>
+                  What each value means
+                </label>
+                <div className="tv-map" data-testid="jn-var-map">
+                  {indexes.map((i) => {
+                    const picked = varFor(i);
+                    const isOther = picked?.source === 'other';
+                    return (
+                      <div className="tv-row-group" key={i}>
+                        <div className="tv-row">
+                          <span className="tv-row-key">{`{{${i}}}`}</span>
+                          <select
+                            className="k-input tv-row-src"
+                            value={picked?.source || ''}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val === 'other') {
+                                setVariable(i, { source: 'other' });
+                              } else {
+                                setVariable(i, { source: val, name: undefined });
+                              }
+                            }}
+                            data-testid={`jn-var-src-${i}`}
+                          >
+                            <option value="">— choose a value —</option>
+                            {sources.map((s) => (
+                              <option value={s.key} key={s.key}>{s.label}</option>
+                            ))}
+                            <option value="other">Other (Custom value)</option>
+                          </select>
+                          <input
+                            className="k-input tv-row-fb"
+                            value={picked?.fallback || ''}
+                            onChange={(e) => setVariable(i, { fallback: e.target.value })}
+                            placeholder={isOther ? 'Custom value to send…' : 'If blank, send…'}
+                            data-testid={`jn-var-fb-${i}`}
+                          />
+                        </div>
+                        {isOther && (
+                          <div className="tv-other-box">
+                            <label className="tv-other-label">
+                              <span className="material-icons">label</span>
+                              Value name / custom value for {`{{${i}}}`}:
+                            </label>
+                            <div className="tv-other-controls">
+                              <input
+                                type="text"
+                                className="k-input tv-other-input"
+                                value={otherDrafts[i] !== undefined ? otherDrafts[i] : (picked?.name || '')}
+                                onChange={(e) => {
+                                  const text = e.target.value;
+                                  setOtherDrafts((prev) => ({ ...prev, [i]: text }));
+                                  setVariable(i, { name: text.trim() });
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    const text = (otherDrafts[i] !== undefined ? otherDrafts[i] : (picked?.name || '')).trim();
+                                    if (text) {
+                                      setVariable(i, { name: text });
+                                    }
+                                  }
+                                }}
+                                placeholder="Enter key name or value (e.g. Coupon, City, Offer)..."
+                                autoFocus={!picked?.name}
+                                data-testid={`jn-var-other-${i}`}
+                              />
+                              <button
+                                type="button"
+                                className="tv-other-add-btn"
+                                onClick={() => {
+                                  const text = (otherDrafts[i] !== undefined ? otherDrafts[i] : (picked?.name || '')).trim();
+                                  if (text) {
+                                    setVariable(i, { name: text });
+                                  }
+                                }}
+                                disabled={!((otherDrafts[i] !== undefined ? otherDrafts[i] : (picked?.name || '')).trim())}
+                                title="Save value"
+                              >
+                                <span className="material-icons">add</span>
+                                {picked?.name ? 'Update' : 'Add'}
+                              </button>
+                            </div>
+                            {picked?.name && (
+                              <div className="tv-other-confirmed">
+                                <span className="material-icons">check_circle</span>
+                                <span>
+                                  Saved key: <strong>{picked.name}</strong>
+                                  {picked.fallback ? <> · Value: <strong>{picked.fallback}</strong></> : null}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {unmapped.length > 0 && (
+                  <p className="k-hint warn" style={{ marginTop: 8 }}>
+                    {unmapped.map((i) => `{{${i}}}`).join(', ')} {unmapped.length === 1 ? 'has' : 'have'} no
+                    value chosen — choose a value or enter a fallback above.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        <footer className="jn-modal-foot">
+          {step === 'vars' ? (
+            <>
+              <button type="button" className="k-btn ghost sm" onClick={() => setStep('edit')} data-testid="jn-editor-back">
+                <span className="material-icons">arrow_back</span> Back
+              </button>
+              <span className="jn-modal-note">Changes apply straight away. Save the journey when you’re done.</span>
+              <button
+                type="button"
+                className="k-btn sm"
+                onClick={() => {
+                  flushOtherDrafts();
+                  onClose();
+                }}
+                data-testid="jn-editor-done"
+              >
+                Done
+              </button>
+            </>
+          ) : (
+            <>
+              {node.data.kind !== 'start' && (
+                <button type="button" className="k-btn ghost sm danger" onClick={onDelete} data-testid="jn-editor-delete">
+                  <span className="material-icons">delete_outline</span> Delete block
+                </button>
+              )}
+              <span className="jn-modal-note">
+                {indexes.length > 0
+                  ? `Continue to set what ${indexes.map((i) => `{{${i}}}`).join(', ')} means.`
+                  : 'Changes apply straight away. Save the journey when you’re done.'}
+              </span>
+              {indexes.length > 0 ? (
+                <button type="button" className="k-btn sm" onClick={() => setStep('vars')} data-testid="jn-editor-continue">
+                  Continue
+                </button>
+              ) : (
+                <button type="button" className="k-btn sm" onClick={onClose} data-testid="jn-editor-done">Done</button>
+              )}
+            </>
+          )}
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+/** "+" on a free output: choose the next block; it's added to the right, connected. */
+type BlockLock = { tier: PlanTierKey; open: () => void } | null;
+
+function AddMenu({ palette, onPick, onClose, lockOf }: { palette: PaletteItem[]; onPick: (p: PaletteItem) => void; onClose: () => void; lockOf: (k: Kind) => BlockLock }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="jn-modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="jn-modal jn-add" role="dialog" aria-modal="true" aria-label="Add the next block" data-testid="jn-add-menu">
+        <header className="jn-modal-head">
+          <div className="jn-modal-titles">
+            <h3>Add the next block</h3>
+            <p>It’s placed to the right and connected.</p>
+          </div>
+          <button type="button" className="jn-modal-x" onClick={onClose} aria-label="Close">
+            <span className="material-icons">close</span>
+          </button>
+        </header>
+        <div className="jn-add-grid">
+          {palette.filter((p) => p.kind !== 'start').map((p) => {
+            const k = KINDS[p.kind];
+            const lock = lockOf(p.kind);
+            return [
+              p.group ? <div className="jn-add-group" key={`g-${p.group}`}>{p.group}</div> : null,
+              <button
+                type="button"
+                key={p.label}
+                className={`jn-add-item${lock ? ' locked' : ''}`}
+                onClick={() => (lock ? lock.open() : onPick(p))}
+                style={{ ['--k' as string]: k.color }}
+                data-testid={`jn-add-${testIdOf(p.label)}`}
+                data-kind={p.kind}
+                data-plan-locked={lock ? lock.tier : undefined}
+              >
+                <span className="jn-ic"><span className="material-icons">{p.icon || k.icon}</span></span>
+                {p.label}
+                {lock && <PlanCrown tier={lock.tier} size={14} className="jn-pal-crown" />}
+              </button>,
+            ];
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Templates: ready-made journeys for the business category (journeyTemplates.ts).
+ * A card that uses a block outside the plan carries its crown and opens the
+ * plans dialog instead.
+ */
+function JourneyTemplatesModal({
+  vertical, onPick, onClose,
+}: {
+  vertical: VerticalConfig;
+  onPick: (card: JourneyTemplateCard) => void;
+  onClose: () => void;
+}) {
+  useBackHandler(true, onClose);
+  const featureLock = useFeatureLock();
+  const cards = useMemo(() => journeyTemplatesFor(vertical), [vertical]);
+  const lockOf = (card: JourneyTemplateCard): BlockLock => {
+    for (const k of kindsOf(card)) {
+      const f = FEATURE_OF_KIND[k as Kind];
+      const lock = f ? featureLock(f) : null;
+      if (lock) return lock;
+    }
+    return null;
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="disc-backdrop tpl-backdrop" onClick={onClose}>
+      <div className="disc-box tpl-box lg xl" onClick={(e) => e.stopPropagation()} data-testid="jt-modal" role="dialog" aria-modal="true" aria-label="Journey templates">
+        <div className="tpl-head">
+          <div className="disc-title">Journey templates for {vertical.key === 'other' ? 'your business' : vertical.label}</div>
+          <button type="button" className="tpl-x" onClick={onClose} title="Close" aria-label="Close" data-testid="jt-close">
+            <span className="material-icons">close</span>
+          </button>
+        </div>
+        <p className="tpl-sub">
+          Pick a ready-made journey: its blocks are placed and connected for you, in your business’s words. Change any block, then
+          publish it. Nothing reaches customers until you do.
+        </p>
+        <div className="tpl-body">
+          <div className="ftg" data-testid="jt-gallery">
+            <div className="ftg-grid">
+              {cards.map((c) => {
+                const lock = lockOf(c);
+                return (
+                  <button
+                    type="button"
+                    className={`ftg-card${lock ? ' locked' : ''}`}
+                    key={c.id}
+                    onClick={() => (lock ? lock.open() : onPick(c))}
+                    data-testid={`jt-card-${c.id}`}
+                    data-plan-locked={lock ? lock.tier : undefined}
+                  >
+                    <span className="jt-card-top">
+                      <span className="material-icons ftg-card-ic">{c.icon}</span>
+                      {lock && <PlanCrown tier={lock.tier} size={16} className="jn-pal-crown" />}
+                    </span>
+                    <span className="ftg-card-title">{c.title}</span>
+                    <span className="ftg-card-desc">{c.description}</span>
+                    <span className="ftg-tags">
+                      {c.steps.map((s, i) => <span className="ftg-tag" key={`${i}-${s}`}>{s}</span>)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FlowCanvas({ nodes, edges, onNodesChange, onEdgesChange, setNodes, setEdges, fitSignal = 0 }: FlowCanvasProps) {
+  const rf = useReactFlow();
+  // A template was put on the canvas: lay it out again with the blocks' real
+  // sizes (now measured), then show all of it.
+  const fitEdges = useRef(edges);
+  fitEdges.current = edges;
+  const fitTemplates = useContext(TemplatesCtx);
+  useEffect(() => {
+    if (!fitSignal) return undefined;
+    const a = setTimeout(() => setNodes((nds) => organizeJourney(nds, fitEdges.current, fitTemplates)), 80);
+    const b = setTimeout(() => rf.fitView({ padding: 0.15, maxZoom: 0.9, duration: 300 }), 200);
+    return () => {
+      clearTimeout(a);
+      clearTimeout(b);
+    };
+  }, [fitSignal, rf]); // eslint-disable-line react-hooks/exhaustive-deps
+  const channel = useContext(ChannelCtx);
+  const vertical = useContext(VerticalCtx);
+  const stroke = EDGE_COLOR[channel];
+  const hasStart = nodes.some((n) => n.data?.kind === 'start');
+  const palette = paletteFor(channel, hasStart, vertical);
+  const templates = useContext(TemplatesCtx);
+  // A data block whose page isn't in the plan: a crown, and the plans dialog instead.
+  const featureLock = useFeatureLock();
+  const lockOf = (kind: Kind): BlockLock => {
+    const f = FEATURE_OF_KIND[kind];
+    return f ? featureLock(f) : null;
+  };
+  const { discard } = useMedia();
+  // The block whose pop-up is open, and the free output a "+" was clicked on.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [addingFrom, setAddingFrom] = useState<{ nodeId: string; handle: string } | null>(null);
+  const editingNode = editingId ? nodes.find((n) => n.id === editingId) || null : null;
+
+  const onConnect = useCallback(
+    // One connection per output: a new one from the same port replaces the old.
+    (c: Connection) =>
+      setEdges((eds) =>
+        addEdge(
+          // Which side it was dropped on isn't stored: the side is redrawn
+          // from where the blocks are.
+          { ...c, targetHandle: null, animated: false, style: { stroke: EDGE_GREY, strokeWidth: 2 } },
+          eds.filter((e) => !(e.source === c.source && (e.sourceHandle || null) === (c.sourceHandle || null))),
+        ),
+      ),
+    [setEdges],
+  );
+
+  const connected = useMemo(() => new Set(edges.map((e) => `${e.source}|${e.sourceHandle || ''}`)), [edges]);
+  // Each connection enters its block from the side facing where it comes
+  // from: the left, or the top / bottom when the block sits under / over it.
+  // Worked out from the live positions, so it follows a block being dragged.
+  const shownEdges = useMemo(() => {
+    const rect = new Map(nodes.map((n) => [n.id, { x: n.position.x, y: n.position.y, w: n.width || 0, h: n.height || 0 }]));
+    const bottomOuts = new Map(nodes.map((n) => [n.id, waLayoutPorts(n, templates, connected).some((p) => p.side === 'bottom')]));
+    return edges.map((e) => {
+      const side = inSideFor(rect.get(e.source) || null, rect.get(e.target) || null, !!bottomOuts.get(e.target));
+      return { ...edgeLook(e, stroke), targetHandle: IN_HANDLE[side] };
+    });
+  }, [edges, nodes, stroke, templates, connected]);
+  // Which input sides are in use, as one string so the blocks only re-render
+  // when one changes (not on every frame of a drag).
+  const inUsedKey = shownEdges.filter((e) => e.targetHandle).map((e) => `${e.target}|${e.targetHandle === IN_HANDLE.top ? 'top' : 'bottom'}`).sort().join(',');
+  const inUsed = useMemo(() => new Set(inUsedKey ? inUsedKey.split(',') : []), [inUsedKey]);
+  const canvasApi = useMemo<CanvasApi>(
+    () => ({ connected, inUsed, addFrom: (nodeId, handle) => setAddingFrom({ nodeId, handle }) }),
+    [connected, inUsed],
+  );
+  const { full, toggle: toggleFull } = useCanvasFullscreen(() => {
+    setTimeout(() => rf.fitView({ padding: 0.2, maxZoom: 0.9, duration: 250 }), 120);
+  });
+
+  function addAfter(p: PaletteItem) {
+    const from = addingFrom;
+    setAddingFrom(null);
+    if (!from) return;
+    const src = rf.getNode(from.nodeId);
+    if (!src) return;
+    // The plain "next": to the right. A branch (a bottom port): below and to
+    // the right, one row per branch, so the branches fan out.
+    const all = outputsOf(src.data as WaData, templates);
+    const outs = all.filter((o) => o.id);
+    const idx = outs.findIndex((o) => o.id === from.handle);
+    const width = src.width || 240;
+    // A lone answer comes out of the side, like a plain "next".
+    const onSide = outs.length === 1 && all.length === 1 && (src.data as WaData).kind !== 'template';
+    const position = from.handle && idx >= 0 && !onSide
+      ? { x: src.position.x + width + 90, y: src.position.y + (src.height || 60) + 70 + idx * 110 }
+      : { x: src.position.x + width + 110, y: src.position.y };
+    let newId = '';
+    setNodes((nds) => {
+      newId = nextId(nds);
+      return [...nds, { id: newId, type: 'wa', position, data: makeData(p.kind, p.count, p.header, channel, vertical) }];
+    });
+    setEdges((eds) => [
+      ...eds,
+      { id: `e-${from.nodeId}-${from.handle || 'out'}-${newId}`, source: from.nodeId, sourceHandle: from.handle || null, target: newId, animated: false, style: { stroke: EDGE_GREY, strokeWidth: 2 } },
+    ]);
+    // Straight into the new block's settings.
+    setTimeout(() => setEditingId(newId), 0);
+  }
+
+  function deleteNode(id: string) {
+    const n = rf.getNode(id);
+    const d = n?.data as WaData | undefined;
+    discard(d?.headerMediaUrl);
+    (d?.cards || []).forEach((c) => discard(c.imageUrl));
+    setNodes((nds) => nds.filter((x) => x.id !== id));
+    setEdges((es) => es.filter((e) => e.source !== id && e.target !== id));
+    setEditingId(null);
+  }
+
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }, []);
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const raw = e.dataTransfer.getData('application/reactflow');
+      if (!raw) return;
+      const { kind, count, header } = JSON.parse(raw) as { kind: Kind; count?: number; header?: HeaderType };
+      const position = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      setNodes((nds) => {
+        // One Start per journey.
+        if (kind === 'start' && nds.some((n) => n.data?.kind === 'start')) return nds;
+        // Ids already on the canvas (a saved journey) are never reused.
+        const id = nextId(nds);
+        return [...nds, { id, type: 'wa', position, data: makeData(kind, count, header, channel, vertical) }];
+      });
+    },
+    [rf, setNodes, channel, vertical],
+  );
+
+  // Touch screens can't drag from the palette: a tap puts the block in the
+  // middle of what the canvas shows (a little lower each time, so blocks
+  // added one after another don't land on top of each other).
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const tapCount = useRef(0);
+  const touchUi = typeof window !== 'undefined'
+    && (window.matchMedia?.('(pointer: coarse)').matches || window.innerWidth < 768);
+  function addFromTap(p: PaletteItem) {
+    const r = canvasRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const step = (tapCount.current % 6) * 40;
+    tapCount.current += 1;
+    const position = rf.screenToFlowPosition({ x: r.left + r.width / 2 - 90 + step, y: r.top + r.height / 3 + step });
+    setNodes((nds) => {
+      if (p.kind === 'start' && nds.some((n) => n.data?.kind === 'start')) return nds;
+      const id = nextId(nds);
+      return [...nds, { id, type: 'wa', position, data: makeData(p.kind, p.count, p.header, channel, vertical) }];
+    });
+  }
+
+  function onPaletteDragStart(e: React.DragEvent, p: PaletteItem) {
+    const lock = lockOf(p.kind);
+    if (lock) {
+      e.preventDefault();
+      lock.open();
+      return;
+    }
+    e.dataTransfer.setData('application/reactflow', JSON.stringify({ kind: p.kind, count: p.count, header: p.header }));
+    e.dataTransfer.effectAllowed = 'move';
+  }
+
+  return (
+    <div className={`flows-body${full ? ' canvas-full' : ''}`} data-testid="canvas-wrap">
+      <aside className="flow-palette" data-testid="flow-palette" data-channel={channel}>
+        <div className="fp-title">{CHANNEL_NAME[channel]} blocks</div>
+        <p className="fp-hint">
+          {touchUi ? 'Tap a block to add it to the canvas, then connect the ports.' : 'Drag a block onto the canvas, then connect the ports.'}
+        </p>
+        {palette.map((p) => {
+          const k = KINDS[p.kind];
+          const lock = lockOf(p.kind);
+          return [
+            p.group ? <div className="fp-group" key={`g-${p.group}`} data-testid="pal-group">{p.group}</div> : null,
+            <div
+              key={p.label}
+              className={`pal-item${lock ? ' locked' : ''}`}
+              draggable
+              title={
+                lock
+                  ? `Needs the ${TIER_NAMES[lock.tier]} plan`
+                  : p.kind === 'start'
+                    ? 'This journey has no Start: drop one and connect it to your first message'
+                    : p.kind === 'restart'
+                      ? 'Goes back to Start and runs the journey again, like the customer typing "hi"'
+                      : undefined
+              }
+              onDragStart={(e) => onPaletteDragStart(e, p)}
+              onClick={lock ? () => lock.open() : touchUi ? () => addFromTap(p) : undefined}
+              data-testid={`pal-${testIdOf(p.label)}`}
+              data-kind={p.kind}
+              data-plan-locked={lock ? lock.tier : undefined}
+            >
+              <span className="material-icons" style={{ color: k.color }}>
+                {p.icon || k.icon}
+              </span>
+              {p.label}
+              {lock && <PlanCrown tier={lock.tier} size={14} className="jn-pal-crown" />}
+            </div>,
+          ];
+        })}
+      </aside>
+
+      <div className="flow-canvas jn-canvas" ref={canvasRef} onDrop={onDrop} onDragOver={onDragOver}>
+        <button
+          type="button"
+          className="jn-tidy"
+          onClick={() => {
+            setNodes((nds) => organizeJourney(nds, edges, templates));
+            setTimeout(() => rf.fitView({ padding: 0.2, maxZoom: 0.9, duration: 300 }), 50);
+          }}
+          title="Arrange the blocks left to right in the order the journey runs, each branch in its own row"
+          data-testid="jn-organize"
+        >
+          <span className="material-icons">account_tree</span> Organize
+        </button>
+        <CanvasCtx.Provider value={canvasApi}>
+          <ReactFlow
+            nodes={nodes}
+            edges={shownEdges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={(_, n) => setEditingId(n.id)}
+            // While a pop-up is open, Backspace edits text, it never deletes the block.
+            deleteKeyCode={editingId || addingFrom ? null : ['Backspace', 'Delete']}
+            nodeTypes={nodeTypes}
+            fitView
+            fitViewOptions={{ padding: 0.3, maxZoom: 0.9 }}
+            minZoom={0.3}
+            defaultEdgeOptions={{ type: 'default', animated: false }}
+            connectionLineStyle={{ stroke: EDGE_GREY, strokeWidth: 2 }}
+            // A click on a "+" opens "Add the next block"; connecting is by dragging.
+            connectOnClick={false}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background variant={BackgroundVariant.Dots} gap={18} size={1.6} color="#c9c2b6" />
+            <Controls>
+              <FullscreenButton full={full} onClick={toggleFull} />
+            </Controls>
+            <MiniMap pannable zoomable nodeColor={(n) => KINDS[(n.data as WaData)?.kind || 'message']?.color || stroke} />
+          </ReactFlow>
+        </CanvasCtx.Provider>
+      </div>
+      {editingNode && <BlockEditor node={editingNode} onClose={() => setEditingId(null)} onDelete={() => deleteNode(editingNode.id)} />}
+      {addingFrom && <AddMenu palette={palette} onPick={addAfter} onClose={() => setAddingFrom(null)} lockOf={lockOf} />}
+    </div>
+  );
+}
+
+// Full-page journey editor: node canvas + a name and Save. Nodes/edges live
+// here (controlled) so they can be persisted.
+function JourneyEditor({
+  api,
+  templates,
+  journey,
+  channel = 'whatsapp',
+  connection,
+  onBack,
+  onSaved,
+  registerDirty,
+  onNavigate,
+  vertical,
+  categoryNames = [],
+}: {
+  api: CrmApi;
+  templates: TemplateItem[];
+  /** The business's category: which data blocks it gets, and their wording. */
+  vertical?: VerticalConfig;
+  categoryNames?: string[];
+  journey: Journey | null;
+  /** The chats this journey answers. */
+  channel?: JourneyChannel;
+  /** Instagram / Messenger: the connection's state ('' while loading or for WhatsApp). */
+  connection?: '' | 'connected' | 'disconnected' | 'none';
+  /** Omitted when the editor *is* the page and there's nowhere to go back to. */
+  onBack?: () => void;
+  onSaved: (msg: string, saved?: Journey) => void;
+  /** Register an "are there unsaved changes?" probe with the shell. */
+  registerDirty?: (fn: (() => boolean) | null) => void;
+  onNavigate?: (view: any) => void;
+}) {
+  // Only when opened as a sub-page (it has a back arrow); as a tab's main
+  // view, Back is the shell's (return to Chats, asking if unsaved).
+  useBackHandler(!!onBack, () => onBack?.());
+  // A saved draft opens in place of the published journey (customers keep
+  // getting the published one until Publish).
+  const draft = journey?.draft && Array.isArray(journey.draft.nodes) && journey.draft.nodes.length ? journey.draft : null;
+  const source = draft || journey;
+  const seedNodes = (source?.nodes?.length ? (source.nodes as Node<WaData>[]) : seedNodesFor(channel));
+  const seedEdges = (source?.nodes?.length ? ((source.edges || []) as Edge[]) : initialEdges);
+  const [name, setName] = useState(source?.name || (channel === 'whatsapp' ? 'My Journey' : `My ${CHANNEL_NAME[channel]} journey`));
+  const [nodes, setNodes, onNodesChange] = useNodesState<WaData>(seedNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(seedEdges);
+  const [savedId, setSavedId] = useState(journey?._id || '');
+  const [saving, setSaving] = useState<'' | 'draft' | 'publish' | 'discard'>('');
+  // On the server: unpublished changes, and whether anything is live yet.
+  const [hasDraft, setHasDraft] = useState(!!draft);
+  const [hasPublished, setHasPublished] = useState(!!journey?.nodes?.length);
+  // The live version, for "Discard draft".
+  const published = useRef({ name: journey?.name || '', nodes: (journey?.nodes || []) as Node<WaData>[], edges: (journey?.edges || []) as Edge[] });
+  const confirm = useConfirm();
+  const flashMsg = useFlash();
+  // Templates: ready-made journeys for the business category (WhatsApp).
+  const [browsing, setBrowsing] = useState(false);
+  const [fitSignal, setFitSignal] = useState(0);
+  // The journey always runs (no Bot on / off here any more). Whether Flows
+  // take over WhatsApp is the Flows tab's switch; a single chat can still be
+  // set to Manual in Chats.
+  const [error, setError] = useState<{ message: string; problems: string[] } | null>(null);
+  // Media uploaded in this session and then replaced or removed. Deleted only
+  // at save (or on leaving), and only if nothing points at it any more, so an
+  // undo can bring a replaced photo back. Already-saved media is cleaned up
+  // server-side.
+  const replaced = useRef(new Set<string>());
+  const media = useMediaApi(
+    (f) => api.uploadMedia(f, 'journeys'),
+    async (url) => {
+      replaced.current.add(url);
+    },
+  );
+  // In use: the saved version AND the published one. While a draft is being
+  // edited, a photo the draft dropped can still be what customers get.
+  const inUse = (saved: string) => `${saved}\n${JSON.stringify(published.current)}`;
+  const reclaim = (stillUsed: string) => {
+    const used = inUse(stillUsed);
+    for (const url of [...replaced.current]) {
+      if (used.includes(url)) continue;
+      replaced.current.delete(url);
+      api.deleteMedia(url).catch(() => {});
+    }
+  };
+
+  // A snapshot of only what the business actually authored, so "unsaved
+  // changes" means what they'd expect. React Flow writes `selected`,
+  // `dragging` and measured sizes back onto its nodes, and reorders them for
+  // z-index — comparing the raw arrays would call a single click a change.
+  const snapshot = () => snapshotOf(name, nodes, edges);
+  const snapshotOf = (name: string, nodes: Node<WaData>[], edges: Edge[]) =>
+    JSON.stringify({
+      name: name.trim(),
+      nodes: [...nodes]
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((n) => ({
+          id: n.id,
+          type: n.type,
+          x: Math.round(n.position?.x ?? 0),
+          y: Math.round(n.position?.y ?? 0),
+          data: n.data,
+        })),
+      edges: [...edges]
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          sourceHandle: e.sourceHandle ?? null,
+          targetHandle: e.targetHandle ?? null,
+          label: typeof e.label === 'string' ? e.label : null,
+        })),
+    });
+  const baseline = useRef('');
+  useEffect(() => {
+    baseline.current = snapshot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // A journey that was never saved is always "dirty", even untouched: the
+  // editor seeds a starter graph (Start → a welcome message), and comparing
+  // that seed against its own baseline made the header read "Saved" when
+  // nothing had ever been written to the backend — so the Save button never
+  // appeared and the journey silently never persisted.
+  const edited = snapshot() !== baseline.current;
+  const dirty = !savedId || edited;
+
+  // Kept in a ref and refreshed every render so the guard below always reads
+  // the current state rather than a stale closure. The leave guard only cares
+  // about real edits: an untouched starter journey loses nothing by leaving —
+  // the same starter is seeded next time — so it mustn't ask "Discard changes?"
+  // of someone who has only looked at the page.
+  const isDirty = useRef<() => boolean>(() => false);
+  isDirty.current = () => edited;
+
+  // Let the shell intercept navigation away while there's unsaved work.
+  useEffect(() => {
+    registerDirty?.(() => isDirty.current());
+    return () => registerDirty?.(null);
+  }, [registerDirty]);
+
+  // Closing the tab or hitting refresh loses the canvas just as surely.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!isDirty.current()) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+  // Leaving the editor: replaced uploads the saved journey doesn't use go,
+  // and so do files uploaded here that were never saved (Discard, Back).
+  useEffect(() => () => reclaim(baseline.current), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useLeaveCleanup(media, () => inUse(baseline.current), (url) => { api.deleteMedia(url).catch(() => {}); });
+
+  // ---- Undo / redo (like the Flows builder) ----
+  // Each change is a step: typing is grouped until a short pause, and a drag
+  // counts once, when it ends. Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) outside text boxes.
+  const snap = snapshot();
+  const [hist, setHist] = useState<{ stack: string[]; idx: number }>(() => ({ stack: [snap], idx: 0 }));
+  const histTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draggingNow = nodes.some((n) => n.dragging);
+  const record = (s: string) =>
+    setHist((h) => {
+      if (h.stack[h.idx] === s) return h;
+      const stack = [...h.stack.slice(0, h.idx + 1), s].slice(-80);
+      return { stack, idx: stack.length - 1 };
+    });
+  useEffect(() => {
+    if (draggingNow) return undefined;
+    histTimer.current = setTimeout(() => record(snap), 350);
+    return () => {
+      if (histTimer.current) clearTimeout(histTimer.current);
+    };
+  }, [snap, draggingNow]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stroke = EDGE_COLOR[channel];
+  function applySnap(str: string) {
+    const o = JSON.parse(str) as {
+      name: string;
+      nodes: { id: string; type?: string; x: number; y: number; data: WaData }[];
+      edges: { id: string; source: string; target: string; sourceHandle: string | null; targetHandle: string | null; label: string | null }[];
+    };
+    setName(o.name || '');
+    setNodes(o.nodes.map((n) => ({ id: n.id, type: n.type || 'wa', position: { x: n.x, y: n.y }, data: n.data })));
+    setEdges(o.edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      sourceHandle: e.sourceHandle,
+      targetHandle: e.targetHandle,
+      ...(e.label ? { label: e.label } : {}),
+      animated: true,
+      style: { stroke, strokeWidth: 2 },
+    })));
+  }
+  // A change not recorded yet (still typing) counts as the newest step.
+  const pendingStep = hist.stack[hist.idx] !== snap;
+  const canUndo = hist.idx > 0 || pendingStep;
+  const canRedo = !pendingStep && hist.idx < hist.stack.length - 1;
+  function undo() {
+    if (histTimer.current) clearTimeout(histTimer.current);
+    let { stack, idx } = hist;
+    if (pendingStep) {
+      stack = [...stack.slice(0, idx + 1), snap];
+      idx = stack.length - 1;
+    }
+    if (idx <= 0) return;
+    idx -= 1;
+    applySnap(stack[idx]);
+    setHist({ stack, idx });
+  }
+  function redo() {
+    if (!canRedo) return;
+    const idx = hist.idx + 1;
+    applySnap(hist.stack[idx]);
+    setHist((h) => ({ ...h, idx }));
+  }
+  const undoRef = useRef(undo);
+  undoRef.current = undo;
+  const redoRef = useRef(redo);
+  redoRef.current = redo;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      // Text boxes keep their own undo.
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      // Only while the journey is on screen (not under a dialog).
+      if (document.querySelector('.disc-backdrop, .demo-backdrop, [role="dialog"]')) return;
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undoRef.current();
+      } else if (k === 'y' || (k === 'z' && e.shiftKey)) {
+        e.preventDefault();
+        redoRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  /**
+   * "Save draft" keeps the changes without touching what customers get;
+   * "Publish" makes them live and clears the draft.
+   */
+  async function save(mode: 'draft' | 'publish') {
+    setSaving(mode);
+    setError(null);
+    const title = name.trim() || 'Untitled journey';
+    // `active` is always true now: journeys run unless Flows take over.
+    const body: Partial<Journey> = mode === 'publish'
+      ? { name: title, nodes, edges, active: true, draft: null }
+      : { draft: { name: title, nodes, edges } };
+    if (!savedId) {
+      body.channel = channel;
+      if (mode === 'draft') body.name = title;
+    }
+    try {
+      const res = savedId ? await api.updateJourney(savedId, body) : await api.createJourney(body);
+      setSavedId(res.data._id);
+      // Saving is what clears "unsaved changes".
+      baseline.current = snapshot();
+      reclaim(baseline.current);
+      if (mode === 'publish') {
+        published.current = { name: title, nodes, edges };
+        setHasPublished(true);
+        setHasDraft(false);
+        onSaved('Journey published. It now answers your customers.', res.data);
+      } else {
+        setHasDraft(true);
+        onSaved(
+          hasPublished ? 'Draft saved. Customers still get the published journey until you publish.' : 'Draft saved. It doesn’t reply to customers until you publish it.',
+          res.data,
+        );
+      }
+    } catch (e) {
+      // Instagram / Messenger: the server lists what Meta wouldn't accept, block by block.
+      const problems = ((e as { data?: { problems?: { message: string }[] } }).data?.problems || []).map((p) => p.message);
+      setError({ message: (e as Error).message || 'The journey could not be saved.', problems: [...new Set(problems)].slice(0, 6) });
+    } finally {
+      setSaving('');
+    }
+  }
+
+  /**
+   * Put a ready-made journey on the canvas in place of the current blocks.
+   * Asks first when there's work to lose; Undo brings the old blocks back,
+   * and customers keep the published journey until Publish.
+   */
+  async function applyTemplate(card: JourneyTemplateCard) {
+    const untouched = !savedId && !edited;
+    if (!untouched) {
+      const ok = await confirm({
+        title: `Use “${card.title}”?`,
+        message: 'The blocks on the canvas are replaced by this template. Undo brings them back, and customers keep getting the published journey until you publish.',
+        confirmLabel: 'Use template',
+        tone: 'primary',
+      });
+      if (!ok) return;
+    }
+    const built = card.build();
+    const nds = built.nodes.map((n) => ({ ...n, data: n.data as unknown as WaData })) as Node<WaData>[];
+    const eds: Edge[] = built.edges.map((e) => ({ ...e, animated: false, style: { stroke: EDGE_GREY, strokeWidth: 2 } }));
+    setName(built.name);
+    setNodes(organizeJourney(nds, eds, templates));
+    setEdges(eds);
+    setBrowsing(false);
+    setFitSignal((n) => n + 1);
+    flashMsg(`“${card.title}” is on the canvas. Fill in your details, then save or publish it.`);
+  }
+
+  /** Drop the draft (saved and unsaved changes) and go back to the published journey. */
+  async function discardDraft() {
+    if (!savedId || !hasPublished) return;
+    const ok = await confirm({
+      title: 'Discard the draft?',
+      message: 'Your draft changes are deleted and the editor goes back to the published journey. Customers aren’t affected.',
+      confirmLabel: 'Discard draft',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setSaving('discard');
+    setError(null);
+    try {
+      const res = hasDraft ? await api.updateJourney(savedId, { draft: null }) : null;
+      const p = published.current;
+      const pub = snapshotOf(p.name, p.nodes, p.edges);
+      applySnap(pub);
+      baseline.current = pub;
+      // Undo can't bring back the dropped draft (its photos may be deleted).
+      if (histTimer.current) clearTimeout(histTimer.current);
+      setHist({ stack: [pub], idx: 0 });
+      reclaim(pub);
+      setHasDraft(false);
+      onSaved('Draft discarded. The editor shows the published journey.', res?.data);
+    } catch (e) {
+      setError({ message: (e as Error).message || 'The draft could not be discarded.', problems: [] });
+    } finally {
+      setSaving('');
+    }
+  }
+
+  return (
+    <div className="page journey-editor">
+      <header className="page-head">
+        {onBack && (
+          <button className="icon-btn" onClick={onBack} aria-label="Back">
+            <span className="material-icons">arrow_back</span>
+          </button>
+        )}
+        <input className="flow-name-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Journey name" />
+        <div className="flow-head-actions">
+          {channel === 'whatsapp' && (
+            <button className="k-btn ghost sm" onClick={() => setBrowsing(true)} data-testid="jr-templates" title="Start from a ready-made journey for your business">
+              <span className="material-icons">dashboard_customize</span> Templates
+            </button>
+          )}
+          <button className="k-btn ghost sm icon-only" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)" aria-label="Undo" data-testid="jr-undo">
+            <UndoIcon />
+          </button>
+          <button className="k-btn ghost sm icon-only" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)" aria-label="Redo" data-testid="jr-redo">
+            <RedoIcon />
+          </button>
+          {/* Nothing to save is worth saying out loud — it's the difference
+              between "my work is stored" and "I forgot to press the button". */}
+          {!dirty && hasDraft && (
+            <span className="jr-saved draft" title="Your changes are saved as a draft. Customers get the published journey." data-testid="jr-draft-saved">
+              <span className="material-icons">edit_note</span> Draft saved
+            </span>
+          )}
+          {!dirty && !hasDraft && (
+            <span className="jr-saved" title="Customers get this journey" data-testid="jr-published">
+              <span className="material-icons">cloud_done</span> Published
+            </span>
+          )}
+          {hasDraft && hasPublished && (
+            <button className="k-btn ghost sm" onClick={discardDraft} disabled={!!saving} data-testid="jr-discard-draft" title="Go back to the published journey">
+              <span className="material-icons">delete_outline</span> {saving === 'discard' ? 'Discarding…' : 'Discard draft'}
+            </button>
+          )}
+          {dirty && (
+            <button className="k-btn ghost sm" onClick={() => save('draft')} disabled={!!saving} data-testid="jr-save-draft" title="Save without changing what customers get">
+              <span className="material-icons">edit_note</span> {saving === 'draft' ? 'Saving…' : 'Save draft'}
+            </button>
+          )}
+          {(dirty || hasDraft) && (
+            <button className="k-btn sm" onClick={() => save('publish')} disabled={!!saving} data-testid="jr-publish" title="Make this journey live for your customers">
+              <span className="material-icons">publish</span> {saving === 'publish' ? 'Publishing…' : 'Publish'}
+            </button>
+          )}
+        </div>
+      </header>
+      {(hasDraft || !hasPublished) && (
+        <p className="jr-note draft" data-testid="jr-draft-note">
+          <span className="material-icons">edit_note</span>
+          <span>
+            {hasPublished
+              ? <>You’re editing a <b>draft</b>. Customers still get the published journey until you press <b>Publish</b>.</>
+              : <>This journey isn’t published yet, so it doesn’t reply to customers. Press <b>Publish</b> when it’s ready{hasDraft ? '' : <>, or <b>Save draft</b> to finish it later</>}.</>}
+          </span>
+        </p>
+      )}
+      {channel !== 'whatsapp' && (connection === 'none' || connection === 'disconnected') && (
+        <p className="jr-note warn" data-testid="jr-conn-note">
+          <span className="material-icons">link_off</span>
+          <span>
+            {connection === 'none' ? `${CHANNEL_NAME[channel]} isn’t connected yet.` : `${CHANNEL_NAME[channel]} was disconnected at Meta.`} You can build the
+            journey now; it starts answering {CHANNEL_NAME[channel]} chats once it’s connected on Channel Status.
+          </span>
+          {onNavigate && <button type="button" className="k-btn ghost sm" onClick={() => onNavigate('channel-status')}>Channel Status</button>}
+        </p>
+      )}
+      {channel !== 'whatsapp' && (
+        <p className="jr-note" data-testid="jr-window-note">
+          <span className="material-icons">schedule</span>
+          <span>
+            Answers {CHANNEL_NAME[channel]} messages as they arrive (Meta allows replies within 24 hours of the customer’s message).
+            A chat set to <b>Manual</b> in Chats is left to your team.
+          </span>
+        </p>
+      )}
+      {(() => {
+        // The journey begins at its Start block: without one, or with Start
+        // not wired to anything, nothing gets sent.
+        const start = nodes.find((n) => n.data?.kind === 'start');
+        if (start && edges.some((e) => e.source === start.id)) return null;
+        return (
+          <p className="jr-note warn" data-testid="jr-no-start">
+            <span className="material-icons">play_arrow</span>
+            <span>
+              {start
+                ? <>Connect the <b>Start</b> block to your first message: until then this journey doesn’t reply.</>
+                : <>This journey has no <b>Start</b> block, so it doesn’t reply. Drag <b>Start</b> from the top of the blocks list and connect it to your first message.</>}
+            </span>
+          </p>
+        );
+      })()}
+      {error && (
+        <div className="jr-note err" role="alert" data-testid="jr-save-error">
+          <span className="material-icons">error_outline</span>
+          <div>
+            <b>{error.message}</b>
+            {error.problems.length > 1 && <ul>{error.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
+          </div>
+        </div>
+      )}
+      <div className="page-body flows-page-body">
+        <MediaCtx.Provider value={media}>
+          <TemplatesCtx.Provider value={templates}>
+            <ChannelCtx.Provider value={channel}>
+              <VerticalCtx.Provider value={vertical}>
+                <CategoryNamesCtx.Provider value={categoryNames}>
+                  <ReactFlowProvider>
+                    <FlowCanvas
+                      nodes={nodes}
+                      edges={edges}
+                      onNodesChange={onNodesChange}
+                      onEdgesChange={onEdgesChange}
+                      setNodes={setNodes}
+                      setEdges={setEdges}
+                      fitSignal={fitSignal}
+                    />
+                    {browsing && (
+                      <JourneyTemplatesModal
+                        vertical={vertical || verticalConfig('other')}
+                        onPick={applyTemplate}
+                        onClose={() => setBrowsing(false)}
+                      />
+                    )}
+                  </ReactFlowProvider>
+                </CategoryNamesCtx.Provider>
+              </VerticalCtx.Provider>
+            </ChannelCtx.Provider>
+          </TemplatesCtx.Provider>
+        </MediaCtx.Provider>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Journeys: the canvas, straight away.
+ *
+ * This used to be a list with a + button, which meant two clicks and an empty
+ * screen before a business could build anything. A tenant has one chatbot, so
+ * the editor *is* the page: it loads the saved journey, or starts from the
+ * seed layout if there isn't one yet, and saving updates that same journey.
+ *
+ * If several journeys exist from before this change, the most recent one is
+ * the one edited — the others stay in the database untouched.
+ */
+const JOURNEY_CHANNELS: JourneyChannel[] = ['whatsapp', 'instagram', 'messenger'];
+const JOURNEY_TAB_KEY = 'crm_journey_channel';
+const channelOfJourney = (j: Journey): JourneyChannel => (j.channel === 'instagram' || j.channel === 'messenger' ? j.channel : 'whatsapp');
+
+/**
+ * One journey per channel, picked with the tabs on top (WhatsApp, Instagram,
+ * Messenger). Each channel has its own blocks; a saved journey always answers
+ * its chats (unless Flows take over WhatsApp, or a chat is set to Manual).
+ */
+function JourneyManager({
+  api,
+  templates,
+  registerDirty,
+  onNavigate,
+  vertical,
+  categoryNames,
+}: {
+  api: CrmApi;
+  templates: TemplateItem[];
+  registerDirty?: (fn: (() => boolean) | null) => void;
+  onNavigate?: (view: any) => void;
+  vertical?: VerticalConfig;
+  categoryNames?: string[];
+}) {
+  // The newest journey of each channel (older ones stay in the database untouched).
+  const [byChannel, setByChannel] = useState<Partial<Record<JourneyChannel, Journey>> | null>(null);
+  const [channel, setChannelState] = useState<JourneyChannel>(() => {
+    try {
+      const v = localStorage.getItem(JOURNEY_TAB_KEY) as JourneyChannel | null;
+      return v && JOURNEY_CHANNELS.includes(v) ? v : 'whatsapp';
+    } catch {
+      return 'whatsapp';
+    }
+  });
+  const [pending, setPending] = useState<JourneyChannel | null>(null);
+  // '' = still checking. Instagram / Messenger stay locked until connected.
+  const [conns, setConns] = useState<Record<'instagram' | 'messenger', '' | 'connected' | 'disconnected' | 'none'>>({ instagram: '', messenger: '' });
+  // 'soon': waiting for Meta's approval (features.ts), whatever the connection.
+  const lockOf = (c: JourneyChannel) => (c === 'whatsapp' ? '' : COMING_SOON[c] ? 'soon' : conns[c] === 'connected' ? '' : conns[c] || 'checking');
+  const flash = useFlash();
+
+  useEffect(() => {
+    api
+      .listJourneys()
+      .then((r) => {
+        const out: Partial<Record<JourneyChannel, Journey>> = {};
+        for (const j of r.data || []) {
+          const ch = channelOfJourney(j);
+          if (!out[ch]) out[ch] = j; // the list is newest first
+        }
+        setByChannel(out);
+      })
+      .catch(() => setByChannel({}));
+    api
+      .getMetaChannels()
+      .then((r) => {
+        const st = (c: { status?: string } | null | undefined) => (!c ? 'none' : c.status === 'connected' ? 'connected' : 'disconnected');
+        setConns({ instagram: st(r.connections?.instagram), messenger: st(r.connections?.messenger) });
+      })
+      // Couldn't check: treated as not connected (locked), like Channel Status would show it.
+      .catch(() => setConns({ instagram: 'none', messenger: 'none' }));
+  }, [api]);
+
+  // Switching channel unmounts the editor: ask first when it has unsaved work.
+  const childDirty = useRef<() => boolean>(() => false);
+  const registerChildDirty = useCallback(
+    (fn: (() => boolean) | null) => {
+      childDirty.current = fn || (() => false);
+      registerDirty?.(fn);
+    },
+    [registerDirty],
+  );
+  const setChannel = (c: JourneyChannel) => {
+    setChannelState(c);
+    try {
+      localStorage.setItem(JOURNEY_TAB_KEY, c);
+    } catch {
+      /* ignore */
+    }
+  };
+  function pick(c: JourneyChannel) {
+    if (c === channel) return;
+    if (childDirty.current()) setPending(c);
+    else setChannel(c);
+  }
+
+  const tabs = (
+    <div className="jr-channels" role="tablist" aria-label="Channel" data-testid="jr-channels">
+      {JOURNEY_CHANNELS.map((c) => {
+        const lock = lockOf(c);
+        return (
+          <button
+            key={c}
+            type="button"
+            role="tab"
+            aria-selected={channel === c}
+            className={`jr-channel ${c}${channel === c ? ' on' : ''}${lock && lock !== 'checking' ? ' locked' : ''}`}
+            onClick={() => pick(c)}
+            title={lock === 'soon' ? `${CHANNEL_NAME[c]} automation is coming soon` : lock === 'none' ? `Connect ${CHANNEL_NAME[c]} on Channel Status to build its automation` : lock === 'disconnected' ? `${CHANNEL_NAME[c]} was disconnected: reconnect it to build its automation` : undefined}
+            data-testid={`jr-channel-${c}`}
+            data-locked={lock && lock !== 'checking' ? 'true' : undefined}
+            data-soon={lock === 'soon' ? 'true' : undefined}
+          >
+            <img src={CHANNEL_ICON[c]} alt="" />
+            {CHANNEL_NAME[c]}
+            {lock === 'soon' ? (
+              <SoonPill />
+            ) : lock && lock !== 'checking' ? (
+              <span className="material-icons jr-channel-lock" aria-label="Locked">lock</span>
+            ) : byChannel && (
+              <span
+                className={`jr-channel-dot${byChannel[c]?.nodes?.length ? ' on' : ''}`}
+                title={byChannel[c]?.nodes?.length ? 'Journey published: it answers these chats' : byChannel[c] ? 'Draft only: not published yet' : 'No journey saved yet'}
+              />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  if (!byChannel) {
+    return (
+      <div className="page">
+        {tabs}
+        <div className="page-body">
+          <BladeSpinner center={true} containerHeight={300} />
+        </div>
+      </div>
+    );
+  }
+
+  const lock = lockOf(channel);
+  if (lock === 'checking') {
+    return (
+      <div className="page">
+        {tabs}
+        <div className="page-body">
+          <BladeSpinner center={true} containerHeight={300} />
+        </div>
+      </div>
+    );
+  }
+  if (lock === 'soon' && channel !== 'whatsapp') {
+    return (
+      <>
+        {tabs}
+        <ComingSoonPanel feature={channel} compact />
+      </>
+    );
+  }
+  if (lock) {
+    const name = CHANNEL_NAME[channel];
+    return (
+      <>
+        {tabs}
+        <div className="jr-locked" data-testid="jr-locked">
+          <img src={CHANNEL_ICON[channel]} alt="" />
+          <span className="material-icons jr-locked-ic" aria-hidden="true">lock</span>
+          <h3>{lock === 'disconnected' ? `${name} was disconnected` : `Connect ${name} to build its automation`}</h3>
+          <p>
+            {lock === 'disconnected'
+              ? `Meta removed the CRM’s access to your ${name === 'Instagram' ? 'Instagram account' : 'Facebook Page'}. Reconnect it on Channel Status, then build and switch on the ${name} bot here.`
+              : `The ${name} bot answers your ${name} chats with the blocks you build here. Connect your ${name === 'Instagram' ? 'Instagram professional account' : 'Facebook Page'} on Channel Status first.`}
+          </p>
+          {onNavigate && (
+            <button type="button" className="k-btn" onClick={() => onNavigate(`channel-status:${channel}`)} data-testid="jr-locked-connect">
+              <span className="material-icons" aria-hidden="true">link</span> {lock === 'disconnected' ? `Reconnect ${name}` : `Connect ${name}`}
+            </button>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  const journey = byChannel[channel] || null;
+  return (
+    <>
+      {tabs}
+      {/* Keyed on the channel and loaded id so the editor seeds itself once, from
+          real data, rather than mounting empty and being re-seeded by a prop change. */}
+      <JourneyEditor
+        key={`${channel}:${journey?._id || 'new'}`}
+        api={api}
+        templates={templates}
+        vertical={vertical}
+        categoryNames={categoryNames}
+        journey={journey}
+        channel={channel}
+        connection={channel === 'whatsapp' ? '' : conns[channel]}
+        onSaved={(msg, saved) => {
+          flash(msg);
+          if (saved) setByChannel((m) => ({ ...(m || {}), [channel]: { ...saved, channel } }));
+        }}
+        registerDirty={registerChildDirty}
+        onNavigate={onNavigate}
+      />
+      {pending && (
+        <div className="disc-backdrop" onClick={() => setPending(null)}>
+          <div className="disc-box" onClick={(e) => e.stopPropagation()} data-testid="jr-discard">
+            <div className="disc-title">Discard changes?</div>
+            <p className="disc-text">You have unsaved changes in the {CHANNEL_NAME[channel]} journey. Switching now loses them.</p>
+            <div className="disc-actions">
+              <button className="disc-cancel" onClick={() => setPending(null)}>Keep editing</button>
+              <button
+                className="disc-discard danger"
+                onClick={() => {
+                  childDirty.current = () => false;
+                  registerDirty?.(null);
+                  setChannel(pending);
+                  setPending(null);
+                }}
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+export { FLOWS_MIN_LIMIT };
+
+/** What the Flows tab shows while the number's daily limit is under FLOWS_MIN_LIMIT. */
+function FlowsLockedPanel({ limit }: { limit: number }) {
+  const fmt = (n: number) => n.toLocaleString('en-IN');
+  return (
+    <div className="flows-locked" data-testid="flows-locked">
+      <span className="material-icons flows-locked-ic">lock</span>
+      <h3>Flows open at {fmt(FLOWS_MIN_LIMIT)} messages a day</h3>
+      <p>
+        Your WhatsApp number can message <b>{fmt(limit)}</b> customers a day right now. WhatsApp Flows unlock when
+        Meta raises it to <b>{fmt(FLOWS_MIN_LIMIT)}</b>.
+      </p>
+      <p className="flows-locked-sub">
+        Meta raises the limit on its own as your number keeps a good quality rating and messages more customers. Until
+        then, Journeys answer your chats automatically.
+      </p>
+    </div>
+  );
+}
+
+export function FlowsPage({
+  api,
+  canUseFlows = false,
+  registerDirty,
+  vertical,
+  business: _business,
+  demo: _demo,
+  onNavigate,
+  limitBypass = false,
+}: {
+  api: CrmApi;
+  canUseFlows?: boolean;
+  registerDirty?: (fn: (() => boolean) | null) => void;
+  vertical?: VerticalConfig;
+  business?: BusinessProfile;
+  demo?: boolean;
+  onNavigate?: (view: any) => void;
+  /** The daily-limit lock doesn't apply (the demo, the platform owner). */
+  limitBypass?: boolean;
+}) {
+  const [templates, setTemplates] = useState<TemplateItem[]>([]);
+  const [sources, setSources] = useState<TemplateSource[]>(DEFAULT_TEMPLATE_SOURCES);
+  // WhatsApp Flows open once the number may message FLOWS_MIN_LIMIT customers
+  // a day. A limit that isn't known (not loaded, not connected) doesn't lock.
+  const { data: limitData } = useMessagingLimit();
+  // Native WhatsApp Flows are a plan feature (Basic and up); Journeys are in every plan.
+  const flowsPlan = useFeatureLock()('flows');
+  const flowsLimit = limitData?.connected && limitData.limit && !limitData.limit.unlimited ? Number(limitData.limit.limit) : null;
+  const flowsLocked = !limitBypass && flowsLimit !== null && Number.isFinite(flowsLimit) && flowsLimit < FLOWS_MIN_LIMIT;
+  // 'flows' = native WhatsApp Flow builder, 'journeys' = chatbot node builder.
+  // Journeys is the default: it's the one every business uses.
+  const [tab, setTab] = useState<'flows' | 'journeys'>('journeys');
+  // A pending switch, held while we ask about unsaved work.
+  const [pendingTab, setPendingTab] = useState<'flows' | 'journeys' | null>(null);
+
+  /**
+   * Both builders live under this one page, so switching between them never
+   * reached the shell's navigation guard — the shell only sees a *page* change.
+   * The same question has to be asked here.
+   */
+  const childDirty = useRef<() => boolean>(() => false);
+  const registerChildDirty = useCallback(
+    (fn: (() => boolean) | null) => {
+      childDirty.current = fn || (() => false);
+      // Keep the shell informed too, so leaving the page entirely still asks.
+      registerDirty?.(fn);
+    },
+    [registerDirty],
+  );
+  function switchTab(next: 'flows' | 'journeys') {
+    if (next === tab) return;
+    if (childDirty.current()) setPendingTab(next);
+    else setTab(next);
+  }
+  useEffect(() => {
+    api
+      .getTemplates()
+      .then((res) => setTemplates((res.data || []).filter((t) => t.status === 'APPROVED')))
+      .catch(() => setTemplates([]));
+    api
+      .getTemplateSources()
+      .then((res) => {
+        if (Array.isArray(res.data) && res.data.length) setSources(res.data);
+      })
+      .catch(() => {});
+  }, [api]);
+  // The Catalog block can show one category's products.
+  const [categoryNames, setCategoryNames] = useState<string[]>([]);
+  const wantsCategories = !vertical || vertical.showsPage('catalog');
+  useEffect(() => {
+    if (!wantsCategories) return;
+    api
+      .getCategories()
+      .then((res) => setCategoryNames((res.data || []).map((c) => c.name).filter(Boolean)))
+      .catch(() => setCategoryNames([]));
+  }, [api, wantsCategories]);
+
+  // Without the Flow builder there's nothing to switch between, so the tab bar
+  // and its wrapper header go away entirely and Journeys owns the page.
+
+  if (!canUseFlows || vertical?.noForms) {
+    return (
+      <SourcesCtx.Provider value={sources}>
+        <div className="page">
+          {/* The top bar already says "Automation". */}
+          <JourneyManager api={api} templates={templates} registerDirty={registerDirty} onNavigate={onNavigate} vertical={vertical} categoryNames={categoryNames} />
+        </div>
+      </SourcesCtx.Provider>
+    );
+  }
+
+  return (
+    <SourcesCtx.Provider value={sources}>
+      <div className="page">
+        <header className="page-head">
+          <div className="flow-tabs">
+            <button className={`flow-tab${tab === 'journeys' ? ' on' : ''}`} onClick={() => switchTab('journeys')}>
+              <span className="material-icons">hub</span> Journeys
+            </button>
+            <button
+              className={`flow-tab${tab === 'flows' ? ' on' : ''}${flowsLocked || flowsPlan ? ' locked' : ''}`}
+              onClick={() => (flowsPlan ? flowsPlan.open() : switchTab('flows'))}
+              title={flowsPlan ? 'WhatsApp Flows are included from the Basic plan' : flowsLocked ? `Flows open at a daily messaging limit of ${FLOWS_MIN_LIMIT.toLocaleString('en-IN')}` : undefined}
+              data-testid="flows-tab"
+              data-locked={flowsLocked || flowsPlan ? 'true' : undefined}
+              data-plan-locked={flowsPlan ? flowsPlan.tier : undefined}
+            >
+              <span className="material-icons">account_tree</span> Flows
+              {flowsPlan ? (
+                <PlanCrown tier={flowsPlan.tier} className="flow-tab-crown" />
+              ) : flowsLocked && <span className="material-icons flow-tab-lock" aria-label="Locked">lock</span>}
+            </button>
+          </div>
+        </header>
+        {tab === 'flows' && flowsLocked && !flowsPlan ? (
+          <div className="page-body">
+            <FlowsLockedPanel limit={flowsLimit || 0} />
+          </div>
+        ) : tab === 'flows' && !flowsPlan ? (
+          <div className="page-body">
+            <FlowBuilderPage api={api} registerDirty={registerChildDirty} vertical={vertical} />
+          </div>
+        ) : (
+          <JourneyManager api={api} templates={templates} registerDirty={registerChildDirty} onNavigate={onNavigate} vertical={vertical} categoryNames={categoryNames} />
+        )}
+
+        {pendingTab && (
+          <div className="disc-backdrop" onClick={() => setPendingTab(null)}>
+            <div className="disc-box" onClick={(e) => e.stopPropagation()}>
+              <div className="disc-title">Discard changes?</div>
+              <p className="disc-text">
+                You have unsaved changes here. Switching now loses them.
+              </p>
+              <div className="disc-actions">
+                <button className="disc-cancel" onClick={() => setPendingTab(null)}>
+                  Keep editing
+                </button>
+                <button
+                  className="disc-discard danger"
+                  onClick={() => {
+                    // The outgoing builder unmounts, so its probe must go with it
+                    // or the shell would keep asking about work that's gone.
+                    childDirty.current = () => false;
+                    registerDirty?.(null);
+                    setTab(pendingTab);
+                    setPendingTab(null);
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </SourcesCtx.Provider>
+  );
+}

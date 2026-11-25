@@ -1,0 +1,252 @@
+/* =============================================================================
+   CRM dark theme: token values + hand-tuned spots.
+   Active only while the CRM sets <html data-theme="dark"> (src/crm/theme.tsx).
+   Most dark colours are generated at build time from the CRM stylesheets
+   (build/crmDarkTheme.ts); this file holds what a colour formula can't decide.
+   Overrides use :root[data-theme="dark"], which outranks the original rules
+   and their generated :where(...) copies whatever order the stylesheets load in.
+   ========================================================================== */
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --wa-primary-soft: rgba(12, 188, 4, 0.14);
+  --wa-secondary: #005c4b;
+  --wa-ink: #e9ecef;
+  --wa-ink-muted: #8d949b;
+  --wa-ink-inverse: #ffffff;
+  --wa-link: #60a5fa;
+  --wa-canvas: #0f1214;
+  --wa-surface: #171a1e;
+  --wa-surface-2: #1e2226;
+  --wa-surface-dark: #0b0d10;
+  --wa-chat-bg: #0b141a;
+  --wa-panel: #1a1d21;
+  --wa-hairline: rgba(255, 255, 255, 0.08);
+  --wa-hairline-strong: rgba(255, 255, 255, 0.14);
+  --wa-focus-ring: 0 0 0 3px rgba(12, 188, 4, 0.3);
+  --wa-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --wa-shadow-md: 0 2px 10px rgba(0, 0, 0, 0.45);
+  --wa-shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
+  --wati-text-body: #e9ecef;
+  --base-color: #171a1e;
+  --switch-bg: #3a4048;
+}
+
+:root[data-theme='dark'] body {
+  background: var(--wa-canvas);
+  color: var(--wa-ink);
+}
+
+/* ---- sidebar ---- */
+:root[data-theme='dark'] .crm-sidebar {
+  background: #14171b;
+  border-right-color: rgba(255, 255, 255, 0.07);
+}
+:root[data-theme='dark'] .crm-side-brand {
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+}
+:root[data-theme='dark'] .crm-side-label {
+  color: #6b737c;
+}
+:root[data-theme='dark'] .crm-side-item {
+  color: #c3c9cf;
+}
+:root[data-theme='dark'] .crm-side-icon {
+  color: #9aa2ab;
+}
+:root[data-theme='dark'] .crm-side-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #ffffff;
+}
+:root[data-theme='dark'] .crm-side-item:hover .crm-side-icon {
+  color: #ffffff;
+}
+:root[data-theme='dark'] .crm-side-item.active {
+  background: rgba(12, 188, 4, 0.14);
+  color: #4ade80;
+}
+:root[data-theme='dark'] .crm-side-item.active .crm-side-icon {
+  color: #4ade80;
+}
+:root[data-theme='dark'] .crm-side-collapse {
+  color: #9aa2ab;
+}
+:root[data-theme='dark'] .crm-side-collapse:hover,
+:root[data-theme='dark'] .crm-side-collapse:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+:root[data-theme='dark'] .crm-side-pill.soon {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fbbf24;
+}
+:root[data-theme='dark'] .crm-side-pill.plan {
+  background: rgba(56, 189, 248, 0.16);
+  color: #7dd3fc;
+}
+@media (min-width: 1025px) {
+  :root[data-theme='dark'] .crm-sidebar.collapsed .crm-side-group + .crm-side-group {
+    border-top-color: rgba(255, 255, 255, 0.07);
+  }
+  :root[data-theme='dark'] .crm-sidebar.collapsed .rail-badge {
+    box-shadow: 0 0 0 2px #14171b;
+  }
+}
+:root[data-theme='dark'] .rail-soon {
+  box-shadow: 0 0 0 2px #14171b;
+}
+
+/* ---- top bar ---- */
+:root[data-theme='dark'] .crm-main-nav {
+  background: #14171b;
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+}
+:root[data-theme='dark'] .crm-main-nav-title {
+  color: #f1f3f5;
+}
+:root[data-theme='dark'] .crm-nav-icon-btn {
+  color: #c3c9cf;
+}
+:root[data-theme='dark'] .crm-nav-icon-btn:hover,
+:root[data-theme='dark'] .crm-nav-icon-btn.active,
+:root[data-theme='dark'] .crm-nav-icon-btn:focus-visible {
+  color: #0cbc04;
+}
+:root[data-theme='dark'] .crm-nav-sep {
+  background: rgba(255, 255, 255, 0.1);
+}
+:root[data-theme='dark'] .crm-nav-connected-status.connected {
+  color: #38bdf8;
+}
+
+/* ---- icons drawn with a fixed dark colour (fill="#000000" etc. in the TSX) ----
+   CSS outranks SVG presentation attributes, so these turn them light. */
+:root[data-theme='dark'] [fill='#000' i],
+:root[data-theme='dark'] [fill='#000000' i],
+:root[data-theme='dark'] [fill='black' i],
+:root[data-theme='dark'] [fill='#0f172a' i],
+:root[data-theme='dark'] [fill='#111b21' i],
+:root[data-theme='dark'] [fill='#353735' i] {
+  fill: #e9ecef;
+}
+:root[data-theme='dark'] [stroke='#000' i],
+:root[data-theme='dark'] [stroke='#000000' i],
+:root[data-theme='dark'] [stroke='black' i],
+:root[data-theme='dark'] [stroke='#0f172a' i],
+:root[data-theme='dark'] [stroke='#1c2b33' i],
+:root[data-theme='dark'] [stroke='#353735' i] {
+  stroke: #e9ecef;
+}
+:root[data-theme='dark'] [stroke='#334155' i],
+:root[data-theme='dark'] [stroke='#374151' i] {
+  stroke: #c3c9cf;
+}
+:root[data-theme='dark'] [stroke='#667781' i],
+:root[data-theme='dark'] [stroke='#6b7280' i] {
+  stroke: #9aa2ab;
+}
+
+/* ---- plan cards (plans dialog, Billing): the buttons and the "Best Value"
+   badge keep their bright fills (set inline per plan), so their text stays dark. */
+:root[data-theme='dark'] .lp-plan-try-btn,
+:root[data-theme='dark'] .lp-plan-try-btn:hover {
+  color: #0b0d10;
+  border-color: #000000;
+}
+:root[data-theme='dark'] button.lp-plan-try-btn:disabled {
+  opacity: 0.8;
+}
+:root[data-theme='dark'] .lp-plan-card-badge:not(.is-current) {
+  color: #0b0d10;
+}
+
+/* ---- chat thread: WhatsApp's dark wallpaper colour ---- */
+:root[data-theme='dark'] .thread.has-active-chat {
+  background-color: var(--wa-chat-bg);
+}
+
+/* ---- message bubbles: WhatsApp dark colours ---- */
+:root[data-theme='dark'] .bubble {
+  background-color: #202c33;
+  color: #e9edef;
+}
+:root[data-theme='dark'] .msg.out .bubble {
+  background-color: #005c4b;
+  color: #e9edef;
+}
+
+/* Emoji-only messages have no bubble; their time pill is WhatsApp's dark grey. */
+:root[data-theme='dark'] .bubble.jumbo,
+:root[data-theme='dark'] .msg.out .bubble.jumbo {
+  background-color: transparent;
+}
+:root[data-theme='dark'] .bubble.jumbo > .meta {
+  background: #202c33;
+  color: #aebac1;
+}
+
+/* ---- bright illustrations: tone them down a little ---- */
+:root[data-theme='dark'] .no-chat-img {
+  opacity: 0.82;
+  filter: brightness(0.88);
+}
+
+/* ---- inputs: native controls follow color-scheme, placeholders stay dim ---- */
+:root[data-theme='dark'] input::placeholder,
+:root[data-theme='dark'] textarea::placeholder {
+  color: #6b737c;
+}
+
+/* ---- scrollbars ---- */
+:root[data-theme='dark'] {
+  scrollbar-color: #64748b rgba(255, 255, 255, 0.08);
+}
+:root[data-theme='dark'] *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+:root[data-theme='dark'] *::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 9999px;
+}
+:root[data-theme='dark'] *::-webkit-scrollbar-thumb {
+  background: #64748b;
+  border-radius: 9999px;
+  border: 2px solid #0f1214;
+}
+:root[data-theme='dark'] *::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* ---- flow builder (reactflow ships its own light stylesheet) ---- */
+:root[data-theme='dark'] .react-flow__pane,
+:root[data-theme='dark'] .react-flow__renderer {
+  background: transparent;
+}
+:root[data-theme='dark'] .react-flow__controls-button {
+  background: #1e2226;
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+  color: #e9ecef;
+  fill: #e9ecef;
+}
+:root[data-theme='dark'] .react-flow__controls-button svg {
+  fill: #e9ecef;
+}
+:root[data-theme='dark'] .react-flow__minimap {
+  background: #171a1e;
+}
+:root[data-theme='dark'] .react-flow__minimap-mask {
+  fill: rgba(0, 0, 0, 0.55);
+}
+:root[data-theme='dark'] .react-flow__attribution {
+  background: transparent;
+}
+:root[data-theme='dark'] .react-flow__edge-path {
+  stroke: #5b636c;
+}
+
+/* Settings loader (WhatsAppProfileEditor.css): grey gears straight on the
+   page. The box takes the page colour, as its gears' holes and gaps use it. */
+:root[data-theme='dark'] .wpe-loading-pane .bg {
+  --wpe-loader-page: var(--wa-surface, #171a1e);
+  --wpe-gear: #6b7280;
+}

@@ -1,0 +1,287 @@
+/* The chat header's ⋮ button and its menu (ChatHeaderMenu.tsx). Same look as
+   the composer's + menu (.ax-menu), dropping down from the top right.
+   Light theme; dark copies are generated at build time. */
+
+.th-more-anchor {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-right: -6px;
+}
+
+.th-more {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #000000;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--wa-radius-full);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+.th-more:hover,
+.th-more.open {
+  background: rgba(11, 20, 26, 0.08);
+}
+.th-more:focus-visible {
+  outline: 2px solid #00a884;
+  outline-offset: 1px;
+}
+.th-more svg {
+  display: block;
+}
+@media (max-width: 560px) {
+  .th-more-anchor {
+    margin-right: 0;
+  }
+  .th-more {
+    width: 32px;
+  }
+}
+
+.cm-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 70;
+  min-width: 240px;
+  padding: 8px;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(11, 20, 26, 0.18), 0 2px 6px rgba(11, 20, 26, 0.08);
+  display: flex;
+  flex-direction: column;
+  animation: cm-pop 0.14s ease-out;
+  transform-origin: top right;
+}
+
+@keyframes cm-pop {
+  from { transform: scale(0.94) translateY(-6px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.cm-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #111b21;
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+}
+.cm-item:hover,
+.cm-item:focus-visible {
+  background: #f0f2f5;
+  outline: none;
+}
+.cm-item:disabled,
+.cm-item.busy {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.cm-ico {
+  display: inline-flex;
+  width: 20px;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.cm-ico .material-icons {
+  font-size: 20px;
+}
+.cm-ico.bot { color: #107c3f; }
+.cm-ico.manual { color: #d97706; }
+
+/* Manual (switch) Bot, as it was in the header, a size smaller in the menu. */
+.cm-auto-group {
+  gap: 8px;
+}
+.cm-auto .switch {
+  --switch-width: 36px;
+  --switch-height: 20px;
+  --circle-diameter: 15px;
+  --icon-cross-size: 5px;
+  --icon-checkmark-size: 8px;
+}
+.cm-auto .switch .checkmark {
+  width: 8px;
+  height: 8px;
+}
+.cm-auto .switch .cross {
+  width: 5px;
+  height: 5px;
+}
+.cm-auto .bot-toggle-label {
+  font-size: 13px;
+}
+
+.cm-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: #e9edef;
+}
+
+.cm-menu {
+  min-width: 264px;
+}
+.cm-item {
+  width: 100%;
+}
+.cm-ico svg {
+  display: block;
+}
+
+/* Two-line rows (Unmute + "Muted until …"). */
+.cm-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.cm-caption {
+  font-size: 12px;
+  font-weight: 400;
+  color: #667781;
+  margin-top: 1px;
+}
+.cm-muted .cm-ico { color: #00a884; }
+
+/* Mute: the ▸ and its flyout to the left, like WhatsApp's. */
+.cm-has-sub {
+  position: relative;
+}
+.cm-caret {
+  margin-left: auto;
+  color: #8696a0;
+  flex-shrink: 0;
+}
+.cm-item.sub-open {
+  background: #f0f2f5;
+}
+.cm-sub {
+  position: absolute;
+  right: calc(100% + 12px);
+  top: -8px;
+  z-index: 71;
+  min-width: 170px;
+  padding: 8px;
+  background: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(11, 20, 26, 0.18), 0 2px 6px rgba(11, 20, 26, 0.08);
+  display: flex;
+  flex-direction: column;
+  animation: cm-sub-pop 0.12s ease-out;
+  transform-origin: top right;
+}
+@keyframes cm-sub-pop {
+  from { transform: translateX(6px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.cm-sub-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 500;
+  color: #111b21;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.cm-sub-item:hover,
+.cm-sub-item:focus-visible {
+  background: #f0f2f5;
+  outline: none;
+}
+
+.cm-fav-on .cm-fav { color: #e11d48; }
+
+/* Block (when not blocked), Clear chat, Delete chat. */
+.cm-danger {
+  color: #ea0038;
+}
+.cm-danger .cm-ico {
+  color: #ea0038;
+}
+.cm-danger:hover,
+.cm-danger:focus-visible {
+  background: #fdecef;
+}
+.cm-unblock .cm-ico { color: #00a884; }
+
+/* Phone: no room beside the menu, so the mute options open inside it. */
+@media (max-width: 560px) {
+  .cm-menu {
+    min-width: 248px;
+  }
+  .cm-sub {
+    position: static;
+    box-shadow: none;
+    padding: 0 0 4px 46px;
+    min-width: 0;
+    animation: none;
+    background: transparent;
+  }
+  .cm-sub-item {
+    padding: 9px 12px;
+  }
+}
+
+/* In place of the composer while the contact is blocked (CrmApp). */
+.chat-blocked-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 16px 14px;
+  padding: 12px 14px 12px 16px;
+  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid #e9edef;
+  box-shadow: 0 1px 3px rgba(11, 20, 26, 0.08);
+  color: #54656f;
+  font-size: 13.5px;
+}
+.chat-blocked-bar > .material-icons {
+  font-size: 22px;
+  color: #ea0038;
+  flex-shrink: 0;
+}
+.chat-blocked-bar > div {
+  flex: 1;
+  min-width: 0;
+}
+.chat-blocked-bar strong {
+  display: block;
+  font-size: 14px;
+  color: #111b21;
+}
+.chat-blocked-bar .cb-btn {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 18px;
+  background: #00a884;
+  color: #ffffff;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chat-blocked-bar .cb-btn:hover:not(:disabled) {
+  background: #008f72;
+}
+.chat-blocked-bar .cb-btn:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}

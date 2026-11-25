@@ -1,0 +1,293 @@
+/* The sidebar's daily messaging limit (MessagingLimit.tsx). Same look as the
+   profile drawer's "Free service messages" card. Light theme; dark copies are
+   generated at build time. */
+
+.crm-side-foot {
+  flex-shrink: 0;
+  padding: 10px 10px 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+/* The plan in force, above the messaging limit (CrmShell SidebarPlan). */
+.crm-side-plan {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  background: #fffbeb;
+  color: #78350f;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.crm-side-plan:hover {
+  border-color: #fbbf24;
+}
+.crm-side-plan:not(.on) {
+  border-color: #e5e7eb;
+  background: #f8fafc;
+  color: #475569;
+}
+.crm-side-plan-crown {
+  display: inline-flex;
+  color: #d97706;
+  flex: none;
+}
+.crm-side-plan:not(.on) .crm-side-plan-crown {
+  color: #94a3b8;
+}
+.crm-side-plan-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crm-side-plan-go {
+  font-size: 11px;
+  font-weight: 600;
+  color: #15803d;
+  white-space: nowrap;
+}
+:root[data-theme='dark'] .crm-side-plan {
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.35);
+  color: #fde68a;
+}
+:root[data-theme='dark'] .crm-side-plan:not(.on) {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #c3c9cf;
+}
+:root[data-theme='dark'] .crm-side-plan-crown {
+  color: #fbbf24;
+}
+:root[data-theme='dark'] .crm-side-plan-go {
+  color: #4ade80;
+}
+@media (min-width: 1025px) {
+  .crm-sidebar.collapsed .crm-side-plan {
+    justify-content: center;
+    padding: 8px 0;
+  }
+  .crm-sidebar.collapsed .crm-side-plan-text,
+  .crm-sidebar.collapsed .crm-side-plan-go {
+    display: none;
+  }
+}
+
+.side-limit {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.side-limit:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+.side-limit:focus-visible {
+  outline: none;
+  box-shadow: var(--wa-focus-ring);
+}
+.side-limit.full {
+  border-color: #fca5a5;
+}
+
+.side-limit-wide {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.side-limit-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.side-limit-ico {
+  display: inline-flex;
+  color: #0cbc04;
+  flex-shrink: 0;
+}
+.side-limit.warn .side-limit-ico { color: #f59e0b; }
+.side-limit.full .side-limit-ico { color: #ef4444; }
+.side-limit-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-limit-bar {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+.side-limit-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #0cbc04;
+  transition: width 0.3s ease;
+}
+.side-limit.warn .side-limit-fill { background: #f59e0b; }
+.side-limit.full .side-limit-fill { background: #ef4444; }
+
+.side-limit-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.side-limit-stat {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.side-limit-sub {
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.side-limit.full .side-limit-sub { color: #dc2626; }
+
+/* Collapsed sidebar: a ring with the percentage. */
+.side-limit-ring {
+  display: none;
+  --p: 0;
+  --c: #0cbc04;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  align-items: center;
+  justify-content: center;
+  background: conic-gradient(var(--c) calc(var(--p) * 1%), #e5e7eb 0);
+}
+.side-limit.warn .side-limit-ring { --c: #f59e0b; }
+.side-limit.full .side-limit-ring { --c: #ef4444; }
+.side-limit-ring > span {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Collapsed only on wide screens; the phone drawer always shows the full bar. */
+@media (min-width: 1025px) {
+  .crm-sidebar.collapsed .crm-side-foot {
+    padding: 8px 0 10px;
+  }
+  .crm-sidebar.collapsed .side-limit {
+    align-items: center;
+    padding: 6px 0;
+    border-color: transparent;
+    background: transparent;
+  }
+  .crm-sidebar.collapsed .side-limit-wide {
+    display: none;
+  }
+  .crm-sidebar.collapsed .side-limit-ring {
+    display: inline-flex;
+  }
+}
+
+/* Loading placeholders: the limit card (title kept, figures shimmer) and the plan pill. */
+.side-limit-skel {
+  cursor: default;
+}
+.side-limit-skel:hover {
+  border-color: #e5e7eb;
+  background: #ffffff;
+}
+.side-limit-skel .side-limit-ico {
+  color: #cbd5e1;
+}
+.side-limit-skel .side-limit-title {
+  color: #94a3b8;
+}
+.skel-line {
+  display: inline-block;
+  height: 10px;
+  border-radius: 6px;
+  background: #e5e7eb;
+}
+.skel-shine {
+  position: relative;
+  overflow: hidden;
+}
+.skel-shine::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  animation: sideSkel 1.3s ease-in-out infinite;
+}
+@keyframes sideSkel {
+  to { transform: translateX(100%); }
+}
+.side-limit-ring.skel-ring {
+  background: #e5e7eb;
+}
+.crm-side-plan.skel {
+  height: 35px;
+  cursor: default;
+  border-color: #e5e7eb;
+  background: #f8fafc;
+}
+.crm-side-plan.skel .skel-line {
+  flex: none;
+}
+:root[data-theme='dark'] .side-limit-skel,
+:root[data-theme='dark'] .side-limit-skel:hover {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+:root[data-theme='dark'] .skel-line,
+:root[data-theme='dark'] .side-limit-ring.skel-ring,
+:root[data-theme='dark'] .side-limit-skel .side-limit-bar {
+  background: rgba(255, 255, 255, 0.08);
+}
+:root[data-theme='dark'] .skel-shine::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+}
+:root[data-theme='dark'] .crm-side-plan.skel {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .skel-shine::after { animation: none; }
+}

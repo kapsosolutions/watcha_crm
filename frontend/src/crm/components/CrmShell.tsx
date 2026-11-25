@@ -1,0 +1,1874 @@
+// Top-level CRM shell: a left icon rail + the active view.
+// The rail is business-vertical aware — a tenant only sees the pages its
+// category needs (a hospital gets Members, not Catalog/Offers), and labels
+// adapt ("Doctors" instead of "Members"). See crm/verticals.ts.
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { formSubmissionFromHash, useCrmPageHash, viewFromHash } from '../pageHash';
+import { CrmApi } from '../api';
+import { CrmSocket } from '../socket';
+import type { AppNotification, PlanFeature, PlanState, PlanTierKey } from '../types';
+import { PlanContext, type PlanContextValue } from '../PlanContext';
+import { hasFeature, tierFor, TIER_NAMES, LIMITS } from '../plans';
+import { CrownIcon, PlanLockedPage } from './PlanLocked';
+import { WalletButton } from './WalletButton';
+import { MockCrmApi, MockCrmSocket } from '../demo/mockApi';
+import { CallProvider } from './CallCenter';
+import { MessagingLimitProvider, SidebarMessagingLimit } from './MessagingLimit';
+import { prepareOnboarding } from './ConnectWhatsAppOnboarding';
+import { defaultConfig, type CrmConfig } from '../config';
+import { NavRail, viewLabel, isFormView, type CrmView, type FormRailItem, type ChatChannelTab, SettingsRailSvg, ProfileRailSvg } from './NavRail';
+import { EventAnnouncement } from './EventAnnouncement';
+import { EventPreviewBadge } from '../../event/EventPreviewBadge';
+import { useLiveEvent } from '../../event/liveEvent';
+import { FormSubmissionsPage } from './FormSubmissionsPage';
+import { formPagesFor, formPageOf, pagesInUse, presetOfSubmission, OTHER_FORMS } from '../flowForms';
+import type { Journey, Order, Registration, WaFlowDef, WhatsAppAccountSummary } from '../types';
+import { AutomationLockedPage } from './AutomationLockedPage';
+import { useCrmTheme, ThemeToggleSvg, type CrmTheme } from '../theme';
+import { useCrmScale } from '../uiScale';
+import { ProfileSidebarDrawer } from './ProfileSidebarDrawer';
+import { NotificationDrawer } from './NotificationDrawer';
+import { OtherAppsDialog, useEmbeddedSignup } from './ConnectWhatsApp';
+import { verticalConfig, type LabelOverrides } from '../verticals';
+import { CrmApp } from './CrmApp';
+import { TemplatesPage, type TemplatesTab } from './TemplatesPage';
+import type { CampaignChannel, CampaignStartRequest } from '../types';
+import { CampaignsPage } from './CampaignsPage';
+import { FlowsPage } from './FlowsPage';
+import { CatalogPage } from './CatalogPage';
+import { CategoriesPage } from './CategoriesPage';
+import { MembersPage } from './MembersPage';
+import { OffersPage } from './OffersPage';
+import { ProfilePage } from './ProfilePage';
+import { AdsPage } from './AdsPage';
+import { CreatePage } from './CreatePage';
+import { ComingSoonPage } from './ComingSoon';
+import { COMING_SOON, setEarlyAccess } from '../features';
+import { ChannelStatusPage } from './ChannelStatusPage';
+import { PaymentConfigPage } from './PaymentConfigPage';
+import { WhatsAppConnectRequired } from './WhatsAppConnectRequired';
+import type { BusinessProfile } from '../types';
+import { useLockWindowScroll } from '../useLockWindowScroll';
+import { useAppSmoothScroll } from '../useAppSmoothScroll';
+import { useConfirm, useNotify } from './Dialogs';
+import { useBackHandler } from '../useBackHandler';
+import { BuyPlanModal, PlanPaywall } from './BuyPlanModal';
+import { paymentReturnMessage } from '../razorpay';
+import { DemoModal } from '../../site/DemoModal';
+import { BookDemoSvg, NavConnectSvg, BuyNowSvg } from './TemplateIcons';
+import { numberStatusTone, CHANNEL_STATUS_EVENT, NUMBER_ACTIVATION_EVENT } from '../numberStatus';
+import { preloadMetaSdk } from '../metaSdk';
+import type { SignupActivation } from '../types';
+import { loadPrefs, playSound, wants, PREFS_EVENT, type NotifyPrefs } from '../notifyPrefs';
+import { currentlyWatching, onPushOpen, pushActive, pushPrefsChanged, syncPush } from '../push';
+import './CrmApp.css';
+import './Sidebar.css';
+// Phone layouts for pages made for a wide screen (after the page styles).
+import './MobileFixes.css';
+import '../theme/dark.css';
+import '../theme/scale.css';
+
+interface Props {
+  config?: Partial<CrmConfig>;
+  demo?: boolean;
+  onLogout?: () => void;
+}
+
+const UNCONNECTED_MARQUEE_MESSAGES: Record<string, string> = {
+  chats: 'Connect your WhatsApp account to message unlimited customers.',
+  templates: 'Templates belong to your own WhatsApp Business Account. Connect your WhatsApp number to create and send templates.',
+  campaigns: 'Campaigns belong to your own WhatsApp Business Account. Connect your WhatsApp number to launch broadcast campaigns.',
+  flows: 'WhatsApp Flows and journeys run with your own WhatsApp Business Account. Connect your number to enable Flows.',
+  catalog: 'Connect your WhatsApp account to unlock and publish your product catalog.',
+  categories: 'Connect your WhatsApp account to manage categories for your catalog.',
+  members: 'Connect your WhatsApp account to unlock team members and staff management.',
+  offers: 'Connect your WhatsApp account to create and share special offers with customers.',
+  orders: 'Connect your WhatsApp account to receive and manage WhatsApp orders.',
+  // Getters: COMING_SOON can change after load (early access, features.ts).
+  get ads() {
+    return COMING_SOON.ads
+      ? 'Ads are coming soon · Meanwhile, connect your WhatsApp account to chat, send campaigns and share your catalog.'
+      : 'Connect your WhatsApp account to create Click-to-WhatsApp ads and capture leads.';
+  },
+  get create() {
+    return COMING_SOON.create
+      ? 'Create is coming soon · Meanwhile, connect your WhatsApp account to chat, send campaigns and share your catalog.'
+      : 'Connect your WhatsApp account to reply to everyone your posts and reels bring in from one inbox.';
+  },
+  'payment-config': 'Connect your WhatsApp account to configure WhatsApp Pay and collect payments.',
+  'channel-status': 'Connect your WhatsApp account to activate your number and unlock all messaging features.',
+  profile: 'Connect your WhatsApp account to verify your business and unlock all messaging features.',
+  settings: 'Connect your WhatsApp account to verify your business and unlock all messaging features.',
+};
+
+const CONNECTED_MARQUEE_MESSAGES: Record<string, string> = {
+  chats: 'WhatsApp connected · Live team inbox active · Messaging customers in real-time.',
+  templates: 'WhatsApp connected · Create, submit, and send pre-approved Meta templates.',
+  campaigns: 'WhatsApp connected · Broadcast messages to all your opt-in customer lists.',
+  flows: 'WhatsApp connected · Native WhatsApp interactive flows and automations active.',
+  catalog: 'WhatsApp connected · Showcase products and sync WhatsApp commerce catalog.',
+  categories: 'WhatsApp connected · Organize your items into structured categories.',
+  members: 'WhatsApp connected · Team inbox collaboration and chat assignments active.',
+  offers: 'WhatsApp connected · Send high-converting deals and coupons directly to chat.',
+  orders: 'WhatsApp connected · Automated order processing and delivery receipts enabled.',
+  get ads() {
+    return COMING_SOON.ads
+      ? 'WhatsApp connected · Ads are coming soon, once Meta approves them for every business.'
+      : 'WhatsApp connected · Drive customer conversations from Click-to-WhatsApp ads.';
+  },
+  get create() {
+    return COMING_SOON.create
+      ? 'WhatsApp connected · Create (Facebook and Instagram posts) is coming soon, once Meta approves it.'
+      : 'WhatsApp connected · Publish posts, reels and stories, and DM everyone who comments.';
+  },
+  'payment-config': 'WhatsApp connected · Collect in-chat UPI payments seamlessly via WhatsApp Pay.',
+  'channel-status': 'WhatsApp connected · Your business number is verified and active.',
+  profile: 'WhatsApp connected · Business profile synced with Meta Business Manager.',
+  settings: 'WhatsApp connected · Channel settings synced with Meta Business Manager.',
+};
+
+function renderMarqueeWithWhatsApp(text: string) {
+  const parts = text.split(/(WhatsApp)/gi);
+  return parts.map((part, idx) => {
+    if (part.toLowerCase() === 'whatsapp') {
+      return (
+        <span key={idx} className="crm-top-marquee-wa-word">
+          <img
+            src="/whatsapp.svg"
+            alt="WhatsApp"
+            className="crm-top-marquee-wa-icon"
+            aria-hidden="true"
+          />
+          <span>{part}</span>
+        </span>
+      );
+    }
+    return part;
+  });
+}
+
+function TopBarMarquee({
+  message,
+  needsConnect,
+  onConnectClick,
+  side,
+}: {
+  message: string;
+  needsConnect?: boolean;
+  onConnectClick?: () => void;
+  side: 'left' | 'right';
+}) {
+  return (
+    <div
+      className={`crm-top-bar-marquee ${side}`}
+      onClick={needsConnect ? onConnectClick : undefined}
+      title={needsConnect ? 'Click to connect your WhatsApp account' : undefined}
+      role={needsConnect ? 'button' : undefined}
+      tabIndex={needsConnect ? 0 : undefined}
+    >
+      <div className="crm-top-bar-track-lane">
+      <div className="crm-top-bar-track-single">
+        <div className="crm-top-marquee-item">
+          <span className="crm-top-marquee-text">{renderMarqueeWithWhatsApp(message)}</span>
+          {needsConnect && (
+            <span className="crm-top-marquee-badge red">
+              <img
+                src="/whatsapp.svg"
+                alt="WhatsApp"
+                className="crm-top-marquee-wa-icon-badge"
+                aria-hidden="true"
+              />
+              <span>Connect WhatsApp</span>
+            </span>
+          )}
+        </div>
+      </div>
+      </div>
+    </div>
+  );
+}
+
+/** "Pro plan", "Free trial", "No plan": what the business is on now. */
+function planLabel(plan: PlanState | null | undefined): string {
+  if (!plan) return '';
+  if (plan.status === 'trial') return 'Free trial';
+  if (plan.status === 'free') return 'No plan';
+  return `${plan.name} plan`;
+}
+
+/** The plan with a crown (top nav, beside the profile icon): opens Settings → Billing. */
+function NavPlanCrown({ plan, onOpen }: { plan: PlanState | null | undefined; onOpen: () => void }) {
+  if (!plan) return null;
+  const label = planLabel(plan);
+  const on = plan.status === 'active' || plan.status === 'legacy' || plan.status === 'trial';
+  return (
+    <button
+      type="button"
+      className={`crm-nav-icon-btn crm-nav-plan${on ? ' on' : ''}`}
+      onClick={onOpen}
+      title={`${label} · View details`}
+      aria-label={`${label}, view details`}
+      data-testid="nav-plan-crown"
+      data-plan-status={plan.status}
+    >
+      <CrownIcon size={20} />
+    </button>
+  );
+}
+
+/** The plan with a crown, at the bottom of the sidebar: opens Settings → Billing. */
+function SidebarPlan({ plan, loading, onOpen }: { plan: PlanState | null | undefined; loading?: boolean; onOpen: () => void }) {
+  if (!plan && loading) {
+    return (
+      <div className="crm-side-plan skel" aria-busy="true" aria-label="Loading your plan" data-testid="side-plan-skeleton">
+        <span className="crm-side-plan-crown" aria-hidden="true"><CrownIcon size={16} /></span>
+        <span className="crm-side-plan-text"><span className="skel-line skel-shine" style={{ width: 90 }} /></span>
+        <span className="skel-line skel-shine" style={{ width: 62 }} aria-hidden="true" />
+      </div>
+    );
+  }
+  if (!plan) return null;
+  const label = planLabel(plan);
+  const on = plan.status === 'active' || plan.status === 'legacy' || plan.status === 'trial';
+  return (
+    <button
+      type="button"
+      className={`crm-side-plan${on ? ' on' : ''}`}
+      onClick={onOpen}
+      title={`${label} · View details`}
+      data-testid="side-plan"
+      data-plan-status={plan.status}
+    >
+      <span className="crm-side-plan-crown" aria-hidden="true"><CrownIcon size={16} /></span>
+      <span className="crm-side-plan-text">{label}</span>
+      <span className="crm-side-plan-go" aria-hidden="true">View details</span>
+    </button>
+  );
+}
+
+interface PlanTopBarProps {
+  plan: PlanState | null;
+  onBuyNow: () => void;
+  /** Settings → Billing (the plan's details). */
+  onViewDetails: () => void;
+  view?: CrmView;
+  needsConnect?: boolean;
+  onConnectClick?: () => void;
+}
+
+/**
+ * The announcement bar: the page's marquee on both sides, and in the middle
+ * what the plan needs attention for (from the server's plan state):
+ *   trial      "Your trial ends in N days." (a live HH:MM:SS on the last day) + Buy Now
+ *   paid       👑 "You're on the Pro plan" + View details (Settings → Billing);
+ *              from 5 days before the end: 👑 "Your Pro plan expires in N days." + View details
+ *   free       nothing bought: "Your trial has ended. Choose a plan…" + Choose a plan
+ *              (and the plans cover every page but Settings: PlanPaywall)
+ * A business from before plans (legacy Premium) shows like a paid plan.
+ */
+function PlanTopBar({ plan, onBuyNow, onViewDetails, view, needsConnect, onConnectClick }: PlanTopBarProps) {
+  const [now, setNow] = useState<number>(() => Date.now());
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  const endsAt = plan?.endsAt ? new Date(plan.endsAt).getTime() : null;
+  const msLeft = endsAt ? Math.max(0, endsAt - now) : null;
+  const ticking = msLeft !== null && msLeft <= ONE_DAY_MS;
+  useEffect(() => {
+    if (!endsAt) return undefined;
+    // Every second on the last day (the countdown), every minute otherwise.
+    const timer = setInterval(() => setNow(Date.now()), ticking ? 1000 : 60000);
+    return () => clearInterval(timer);
+  }, [endsAt, ticking]);
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const totalSec = Math.floor((msLeft || 0) / 1000);
+  const timerText = `${pad(Math.floor(totalSec / 3600))} : ${pad(Math.floor((totalSec % 3600) / 60))} : ${pad(totalSec % 60)}`;
+  // Counted on this computer's clock (so it ticks down while the page stays
+  // open), but never above the server's count: a clock that runs even a
+  // second behind would otherwise turn a fresh 7-day trial into "8 days".
+  const localDays = msLeft === null ? 0 : Math.max(1, Math.ceil(msLeft / ONE_DAY_MS));
+  const daysLeft = typeof plan?.daysLeft === 'number' && plan.daysLeft > 0 ? Math.min(localDays, plan.daysLeft) : localDays;
+
+  const currentMsg = needsConnect
+    ? (view ? UNCONNECTED_MARQUEE_MESSAGES[view] : undefined) || 'Connect your WhatsApp account to unlock unlimited messaging and features.'
+    : (view ? CONNECTED_MARQUEE_MESSAGES[view] : undefined) || 'WhatsApp connected · Channel is active and ready to message.';
+
+  const isTrial = plan?.status === 'trial';
+  const who = isTrial ? 'Your trial' : `Your ${plan?.name || ''} plan`;
+  // A trial "ends"; a bought plan "expires".
+  const ends = isTrial ? 'ends' : 'expires';
+  let center: ReactNode = null;
+  if (plan && (plan.status === 'active' || plan.status === 'legacy') && !(plan.status === 'active' && plan.endingSoon)) {
+    // A plan with time left: which one, and its details.
+    center = (
+      <>
+        <span className="crm-top-bar-text crm-top-bar-plan" data-testid="topbar-plan-text">
+          <span className="crm-top-bar-crown" aria-hidden="true"><CrownIcon size={16} /></span>
+          You&apos;re on the <strong>{plan.name} plan</strong>
+        </span>
+        <button type="button" className="crm-top-bar-btn" onClick={onViewDetails} data-testid="topbar-details">
+          <span>View details</span>
+        </button>
+      </>
+    );
+  } else if (plan && (isTrial || (plan.status === 'active' && plan.endingSoon))) {
+    center = (
+      <>
+        {!isTrial && <span className="crm-top-bar-crown" aria-hidden="true"><CrownIcon size={16} /></span>}
+        {msLeft !== null && msLeft <= 0 ? (
+          <span className="crm-top-bar-text">
+            {who} has {isTrial ? 'ended' : 'expired'}:{' '}
+            <strong className="crm-top-bar-timer red">
+              <span className="crm-top-bar-pulse-dot" />
+              00 : 00 : 00
+            </strong>
+          </span>
+        ) : ticking ? (
+          <span className="crm-top-bar-text">
+            {who} {ends} in{' '}
+            <strong className="crm-top-bar-timer red">
+              <span className="crm-top-bar-pulse-dot" />
+              {timerText}
+            </strong>
+          </span>
+        ) : (
+          <span className="crm-top-bar-text" data-testid="topbar-plan-text">
+            {who} {ends} in <strong>{daysLeft === 1 ? '1 day.' : `${daysLeft} days.`}</strong>
+          </span>
+        )}
+        {isTrial ? (
+          <button type="button" className="crm-top-bar-btn" onClick={onBuyNow} data-testid="topbar-buy">
+            <BuyNowSvg width={16} height={16} stroke="currentColor" />
+            <span>Buy Now</span>
+          </button>
+        ) : (
+          <button type="button" className="crm-top-bar-btn" onClick={onViewDetails} data-testid="topbar-details">
+            <span>View details</span>
+          </button>
+        )}
+      </>
+    );
+  } else if (plan?.status === 'free') {
+    center = (
+      <>
+        <span className="crm-top-bar-text" data-testid="topbar-plan-text">
+          {plan.ended?.kind === 'plan' ? `Your ${plan.ended.name} plan has ended.` : 'Your trial has ended.'}{' '}
+          <strong>Choose a plan</strong> to keep using the CRM.
+        </span>
+        <button type="button" className="crm-top-bar-btn" onClick={onBuyNow} data-testid="topbar-buy">
+          <BuyNowSvg width={16} height={16} stroke="currentColor" />
+          <span>Choose a plan</span>
+        </button>
+      </>
+    );
+  }
+
+  return (
+    <div className={`crm-top-bar${center ? '' : ' no-center'}`} data-plan-status={plan?.status || ''}>
+      <TopBarMarquee
+        message={currentMsg}
+        needsConnect={needsConnect}
+        onConnectClick={onConnectClick}
+        side="left"
+      />
+
+      {center && <div className="crm-top-bar-center">{center}</div>}
+
+      <TopBarMarquee
+        message={currentMsg}
+        needsConnect={needsConnect}
+        onConnectClick={onConnectClick}
+        side="right"
+      />
+    </div>
+  );
+}
+
+interface CrmTopNavProps {
+  business?: BusinessProfile;
+  demo?: boolean;
+  view: CrmView;
+  onNavigate: (view: CrmView) => void;
+  onBookDemo: () => void;
+  onOpenProfile: () => void;
+  profileDrawerOpen: boolean;
+  /** Unread notifications, for the bell badge. */
+  notificationsUnread: number;
+  notificationsOpen: boolean;
+  onToggleNotifications: () => void;
+  /** Meta's live status of the number; null = not read yet, '' = Meta gave none. */
+  numberStatus: string | null;
+  /** The open page's name (left of the bar). */
+  title: string;
+  /** Small screens: opens the sidebar drawer. */
+  onOpenMenu: () => void;
+  theme: CrmTheme;
+  onToggleTheme: () => void;
+  /** The plan in force: a crown beside the profile icon (opens Billing). */
+  plan?: PlanState | null;
+  onOpenBilling: () => void;
+}
+
+function CrmTopNav({
+  plan,
+  onOpenBilling,
+  business,
+  demo,
+  view,
+  onNavigate,
+  onBookDemo,
+  onOpenProfile,
+  profileDrawerOpen,
+  notificationsUnread,
+  notificationsOpen,
+  onToggleNotifications,
+  numberStatus,
+  title,
+  onOpenMenu,
+  theme,
+  onToggleTheme,
+}: CrmTopNavProps) {
+  const rawNum = (
+    business?.meta?.displayPhoneNumber ||
+    business?.whatsappNumber ||
+    business?.phone ||
+    business?.ownerPhone ||
+    ''
+  ).replace(/[^\d+]/g, '');
+  const displayPhone = !rawNum ? '' : rawNum.startsWith('+') ? rawNum : `+${rawNum}`;
+  const isConnected = demo || business?.whatsappConnected !== false;
+  // The real Meta status (CONNECTED / PENDING / FLAGGED / …), not "a token is stored".
+  const status = demo
+    ? 'CONNECTED'
+    : (numberStatus || business?.meta?.numberStatus || '').toUpperCase();
+  const statusText = status ? status.replace(/_/g, ' ') : numberStatus === null ? 'CHECKING…' : 'UNKNOWN';
+  const statusClass = { green: 'connected', amber: 'pending', red: 'disconnected', grey: 'unknown' }[numberStatusTone(status)];
+
+  return (
+    <header className="crm-main-nav">
+      <div className="crm-main-nav-left">
+        <button type="button" className="crm-nav-icon-btn crm-nav-burger" onClick={onOpenMenu} aria-label="Open the menu" title="Menu">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+            <path d="M3 5.5H17M3 10H17M3 14.5H17" />
+          </svg>
+        </button>
+        <h1 className="crm-main-nav-title" data-testid="crm-page-title">{title}</h1>
+      </div>
+
+      <div className="crm-main-nav-right">
+        {/* Book a Demo Button */}
+        <button
+          type="button"
+          className="crm-nav-demo-btn"
+          onClick={onBookDemo}
+          title="Book a demo"
+        >
+          <BookDemoSvg width={16} height={16} />
+          <span>Book a demo</span>
+        </button>
+
+        {/* Wallet: coming soon (opens Meta's billing page meanwhile) */}
+        <WalletButton business={business} />
+
+        <div className="crm-nav-sep" />
+
+        {/* Light / dark theme */}
+        <button
+          type="button"
+          className="crm-nav-icon-btn crm-nav-theme"
+          onClick={onToggleTheme}
+          title={theme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme'}
+          aria-label={theme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme'}
+          aria-pressed={theme === 'dark'}
+          data-testid="crm-theme-toggle"
+        >
+          <ThemeToggleSvg theme={theme} />
+        </button>
+
+        {/* Notifications Icon */}
+        <button
+          type="button"
+          className={`crm-nav-icon-btn crm-nav-bell${notificationsOpen ? ' active' : ''}`}
+          title="Notifications"
+          aria-label={notificationsUnread ? `Notifications, ${notificationsUnread} unread` : 'Notifications'}
+          aria-expanded={notificationsOpen}
+          onClick={onToggleNotifications}
+          data-testid="crm-bell"
+        >
+          <svg width="14" height="16" viewBox="0 0 14 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path
+              d="M6.99204 0C10.141 0 12.7359 2.33488 12.9765 5.3554L12.9899 5.57762L12.9944 5.80214L12.9934 9.398L13.9188 11.6202C13.9414 11.6743 13.9591 11.7302 13.9717 11.7871L13.987 11.8733L13.9957 12.0046C13.9957 12.4526 13.6991 12.8387 13.2465 12.9677L13.1302 12.9945L12.9957 13.0046L9.494 13.004L9.48902 13.1653C9.40391 14.469 8.31956 15.5 6.9944 15.5C5.66892 15.5 4.58436 14.4685 4.49972 13.1644L4.494 13.004L0.993294 13.0046C0.905342 13.0046 0.81797 12.993 0.733407 12.9702L0.608948 12.9277C0.198166 12.7567 -0.0438033 12.3392 0.00659775 11.8757L0.0276852 11.7483L0.0701043 11.6202L0.993401 9.401L0.994488 5.79281L0.998788 5.56824C1.1214 2.45115 3.76543 0 6.99204 0ZM8.494 13.004H5.494L5.50136 13.1454C5.5699 13.8581 6.13714 14.425 6.84994 14.4931L6.9944 14.5C7.7741 14.5 8.41485 13.9051 8.48753 13.1445L8.494 13.004ZM6.99204 1C4.36949 1 2.22155 2.92372 2.01154 5.38498L1.99831 5.59723L1.9944 5.80214V9.5L1.956 9.69217L0.993283 12.0046L12.951 12.0066L12.9962 12.0045L12.0328 9.6922L11.9944 9.5L11.9945 5.81241L11.9904 5.60831C11.8853 3.0349 9.68904 1 6.99204 1Z"
+              fill="currentColor"
+            />
+          </svg>
+          {notificationsUnread > 0 && (
+            <span className="crm-nav-bell-badge" data-testid="crm-bell-badge" aria-hidden="true">
+              {notificationsUnread > 99 ? '99+' : notificationsUnread}
+            </span>
+          )}
+        </button>
+
+        <div className="crm-nav-sep" />
+
+        {/* Connection Widget: If connected, show number + status; If not connected, show Connect button */}
+        {isConnected ? (
+          <button
+            type="button"
+            className={`crm-nav-connected ${view === 'channel-status' ? 'active' : ''}`}
+            title={`WhatsApp: ${displayPhone} (${statusText}) — Click to view Channel Status`}
+            onClick={() => onNavigate('channel-status')}
+            data-testid="crm-nav-connected"
+          >
+            <span className={`crm-nav-connected-status ${statusClass}`} data-testid="crm-nav-status">{statusText}</span>
+            <span className="crm-nav-connected-number">{displayPhone}</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={`crm-nav-connect-btn ${view === 'channel-status' ? 'active' : ''}`}
+            title="Connect WhatsApp"
+            onClick={() => onNavigate('channel-status')}
+          >
+            <NavConnectSvg width={18} height={18} />
+            <span>Connect</span>
+          </button>
+        )}
+
+        <div className="crm-nav-sep" />
+
+        {/* Settings Icon -> navigates to Business Profile */}
+        <button
+          type="button"
+          className={`crm-nav-icon-btn ${view === 'profile' || view === 'settings' ? 'active' : ''}`}
+          onClick={() => onNavigate('profile')}
+          title="Business profile"
+          aria-label="Business profile"
+        >
+          <SettingsRailSvg />
+        </button>
+
+        <NavPlanCrown plan={plan} onOpen={onOpenBilling} />
+
+        {/* Profile Icon (Opens Profile Sidebar Drawer) */}
+        <button
+          type="button"
+          className={`crm-nav-icon-btn ${profileDrawerOpen || view === 'profile' ? 'active' : ''}`}
+          onClick={onOpenProfile}
+          title="Profile"
+          aria-label="Profile"
+          aria-expanded={profileDrawerOpen}
+        >
+          <ProfileRailSvg />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+export function CrmShell({ config, demo = false, onLogout }: Props) {
+  // Full-screen app: each page scrolls inside itself, the window never moves.
+  useLockWindowScroll();
+  // Smooth (Lenis) wheel scrolling inside those page panels, on every page.
+  useAppSmoothScroll();
+  // A refresh opens the page that was open (it's in the URL hash, pageHash.ts).
+  const [view, setView] = useState<CrmView>(() => viewFromHash(window.location.hash, demo) ?? 'chats');
+  const [formSubmissionId, setFormSubmissionId] = useState<string | null>(() =>
+    formSubmissionFromHash(window.location.hash, demo),
+  );
+  const [showDemoModal, setShowDemoModal] = useState(false);
+  const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
+  // Chats with unread messages, for the red badge on the Chats icon.
+  const [unreadChats, setUnreadChats] = useState(0);
+  const [chatRequest, setChatRequest] = useState<{ phone: string; n: number } | null>(null);
+  const [channelStatusTab, setChannelStatusTab] = useState<'whatsapp' | 'instagram' | 'messenger'>('whatsapp');
+  const [channelStatusSubItem, setChannelStatusSubItem] = useState<
+    'connect' | 'limit' | 'approval' | 'display_name' | 'phone_number' | 'quality_rating' | 'calling'
+  >('connect');
+  const [templateInitialMode, setTemplateInitialMode] = useState<'list' | 'create'>('list');
+  // 'templates:<tab>' while Templates is open, and "Start a campaign" from the Template Library.
+  const [templatesTabRequest, setTemplatesTabRequest] = useState<{ tab: TemplatesTab; n: number } | null>(null);
+  const [campaignStart, setCampaignStart] = useState<CampaignStartRequest | null>(null);
+
+  useEffect(() => {
+    const handleSubItem = (e: any) => {
+      if (e?.detail) setChannelStatusSubItem(e.detail);
+    };
+    window.addEventListener('crm_set_channel_subitem', handleSubItem);
+    return () => window.removeEventListener('crm_set_channel_subitem', handleSubItem);
+  }, []);
+
+  // ---- Unsaved-work guard -------------------------------------------------
+  // A page with a canvas (the journey builder) registers a probe here. Leaving
+  // the page would discard that work, so navigation is held back and the
+  // confirmation below is shown instead. Kept in the shell because the shell
+  // owns navigation — a page can't refuse a tab change it never hears about.
+  const dirtyProbe = useRef<(() => boolean) | null>(null);
+  const confirm = useConfirm();
+
+  const registerDirty = useCallback((fn: (() => boolean) | null) => {
+    dirtyProbe.current = fn;
+  }, []);
+
+  const navigate = useCallback(
+    (next: CrmView, options?: { templateMode?: 'list' | 'create' }) => {
+      if (options?.templateMode) {
+        setTemplateInitialMode(options.templateMode);
+      } else if (next === 'templates') {
+        setTemplateInitialMode('list');
+      }
+      if (next === view) {
+        if (options?.templateMode) {
+          setTemplateInitialMode(options.templateMode);
+        }
+        return;
+      }
+      if (dirtyProbe.current?.()) {
+        confirm({
+          title: 'Discard changes?',
+          message: 'You have unsaved changes on this page. Leaving now loses them.',
+          confirmLabel: 'Discard',
+          cancelLabel: 'Keep editing',
+        }).then((discard) => {
+          if (!discard) return;
+          // The page unmounts, so its probe goes with it.
+          dirtyProbe.current = null;
+          setFormSubmissionId(null);
+          setView(next);
+        });
+        return;
+      }
+      setFormSubmissionId(null);
+      setView(next);
+    },
+    [view, confirm],
+  );
+
+  const handleOpenTemplateCreate = useCallback(() => {
+    navigate('templates', { templateMode: 'create' });
+  }, [navigate]);
+
+  // Settings → Billing: the plan's details (top bar, nav crown, sidebar plan, paywall).
+  const openBilling = useCallback(() => {
+    try {
+      localStorage.setItem('crm_settings_active_tab', 'billing');
+      window.dispatchEvent(new CustomEvent('crm_set_profile_tab', { detail: 'billing' }));
+    } catch {
+      // ignore
+    }
+    navigate('profile');
+  }, [navigate]);
+
+  // Back from any other tab returns to Chats (the home tab), the way a phone
+  // app's Back returns to its first tab. Open sub-pages close first.
+  useBackHandler(view !== 'chats', () => navigate('chats'));
+  // After the Back layer above, so its history entry exists when the hash is written.
+  useCrmPageHash(view, demo, formSubmissionId);
+
+  const handleOpenChannelStatus = useCallback(
+    (tab: 'whatsapp' | 'instagram' | 'messenger' = 'whatsapp') => {
+      setChannelStatusTab(tab);
+      navigate('channel-status');
+    },
+    [navigate],
+  );
+
+  // Pages can ask for a specific tab: 'channel-status:messenger' opens Channel
+  // Status on Messenger, 'templates:instagram' opens Templates on Instagram.
+  const pageNavigate = useCallback(
+    (target: string) => {
+      const cs = /^channel-status:(whatsapp|instagram|messenger)$/.exec(target);
+      if (cs) {
+        handleOpenChannelStatus(cs[1] as 'whatsapp' | 'instagram' | 'messenger');
+        return;
+      }
+      const tp = /^templates:(library|whatsapp|instagram|messenger)$/.exec(target);
+      if (tp) {
+        try {
+          localStorage.setItem('crm_templates_channel_tab', tp[1]);
+        } catch {
+          /* ignore */
+        }
+        // Already on Templates: the page switches its sidebar item itself.
+        setTemplatesTabRequest((r) => ({ tab: tp[1] as TemplatesTab, n: (r?.n ?? 0) + 1 }));
+        navigate('templates');
+        return;
+      }
+      // 'campaign-new:whatsapp:<template>', 'campaign-new:<messenger|instagram>[:quick|utility:<id>]':
+      // Campaigns opens that channel's creator with it preselected.
+      const cn = /^campaign-new:(whatsapp|messenger|instagram)(?::(.+))?$/.exec(target);
+      // Messenger / Instagram campaigns are coming soon: plain Campaigns instead.
+      if (cn && cn[1] !== 'whatsapp' && COMING_SOON[cn[1] as 'messenger' | 'instagram']) {
+        navigate('campaigns');
+        return;
+      }
+      if (cn) {
+        const ch = cn[1] as CampaignChannel;
+        const rest = cn[2] || '';
+        const m = /^(quick|utility):([a-f0-9]{24})$/.exec(rest);
+        setCampaignStart((r) => ({
+          channel: ch,
+          ...(ch === 'whatsapp' && /^[a-z0-9_]{1,512}$/.test(rest) ? { templateName: rest } : {}),
+          ...(ch !== 'whatsapp' && m?.[1] === 'quick' ? { quickMessageId: m[2] } : {}),
+          ...(ch === 'messenger' && m?.[1] === 'utility' ? { utilityTemplateId: m[2] } : {}),
+          n: (r?.n ?? 0) + 1,
+        }));
+        navigate('campaigns');
+        return;
+      }
+      navigate(target as CrmView);
+    },
+    [handleOpenChannelStatus, navigate],
+  );
+
+  function openChatFor(phone: string) {
+    setChatRequest((r) => ({ phone, n: (r?.n ?? 0) + 1 }));
+    navigate('chats');
+  }
+  /** Channel Status → WhatsApp → Calling. */
+  function openCallingSettings() {
+    setChannelStatusTab('whatsapp');
+    setChannelStatusSubItem('calling');
+    try {
+      window.dispatchEvent(new CustomEvent('crm_set_channel_subitem', { detail: 'calling' }));
+    } catch {
+      /* ignore */
+    }
+    navigate('channel-status');
+  }
+  const cfg = useMemo<CrmConfig>(() => ({ ...defaultConfig, ...config }), [config]);
+  const api = useMemo(() => (demo ? new MockCrmApi(cfg) : new CrmApi(cfg)), [cfg, demo]);
+
+  // ---- Notifications (bell + drawer) ---------------------------------------
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationsUnread, setNotificationsUnread] = useState(0);
+  const [notificationSocket, setNotificationSocket] = useState<CrmSocket | null>(null);
+  // The demo has no server: its feed is the in-memory one (profile sidebar's
+  // live service message count).
+  const demoSocket = useMemo(() => (demo ? new MockCrmSocket('') : null), [demo]);
+  // A record to open on the page a notification leads to (template, campaign, order).
+  const [focusRequest, setFocusRequest] = useState<{ view: CrmView; id: string; n: number } | null>(null);
+
+  // Resolve the tenant's vertical. Demo mode shows everything.
+  // Dev-only test hook (stripped from production builds): localStorage
+  // `__demoCategory` = 'hospital' etc. runs the demo as that business type.
+  const [category, setCategory] = useState<string | undefined>(
+    demo ? (import.meta.env.DEV && typeof localStorage !== 'undefined' && localStorage.getItem('__demoCategory')) || 'other' : undefined,
+  );
+  // The SaaS plan in force (backend services/plans.js): which pages are open,
+  // limits, trial / renewal dates. The demo shows a trial with every feature.
+  const [planState, setPlanState] = useState<PlanState | null>(() => (demo ? demoPlan() : null));
+  // The plans dialog, opened from the top bar, a locked page or a locked option.
+  const [plansFor, setPlansFor] = useState<{ tier?: PlanTierKey; reason?: string } | null>(null);
+  // Automation → the Flows tab (native WhatsApp Flows): every signed-in
+  // business sees it. On a plan without Flows (Starter) it carries the crown
+  // and opens the plans dialog; Basic and up open it (FlowsPage).
+  const [canUseFlows, setCanUseFlows] = useState(false);
+  // The platform owner (admin, or a master-password session): the Flows tab's
+  // daily-limit lock doesn't apply, so any tenant's flows can be looked after.
+  const [staffSession, setStaffSession] = useState(false);
+  // Who we're signed in as, so the chat view can sanity-check live events
+  // against the tenant they claim to belong to.
+  const [businessId, setBusinessId] = useState<string | undefined>(undefined);
+  // Per-business wording overrides (members / categories / customer term).
+  const [labels, setLabels] = useState<LabelOverrides | undefined>(undefined);
+  // The signed-in business, for the WhatsApp connection state.
+  const [business, setBusiness] = useState<BusinessProfile | undefined>(undefined);
+  // All WhatsApp Business (BM) accounts connected under this owner's email.
+  const [accounts, setAccounts] = useState<WhatsAppAccountSummary[]>([]);
+  const [switchingAccount, setSwitchingAccount] = useState(false);
+  const [switchingToName, setSwitchingToName] = useState('');
+  // Active channel sub-filter under Chats (driven by the left sidebar sub-links).
+  const [chatChannel, setChatChannel] = useState<ChatChannelTab>(() => {
+    try {
+      const saved = localStorage.getItem('crm_chats_channel_tab') as ChatChannelTab | null;
+      return saved && ['all', 'favourites', 'whatsapp', 'instagram', 'messenger'].includes(saved) ? saved : 'all';
+    } catch {
+      return 'all';
+    }
+  });
+  const handleChatChannelChange = useCallback((ch: ChatChannelTab) => {
+    setChatChannel(ch);
+    try {
+      localStorage.setItem('crm_chats_channel_tab', ch);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const [channelBadges, setChannelBadges] = useState<Record<'all' | 'whatsapp' | 'instagram' | 'messenger', number>>({
+    all: 0,
+    whatsapp: 0,
+    instagram: 0,
+    messenger: 0,
+  });
+
+  // The account details have come back (or failed): until then the chat page
+  // doesn't know whether to show the connect-WhatsApp page or the empty inbox.
+  const [meKnown, setMeKnown] = useState(demo);
+  const loadMe = useCallback(() => {
+    if (demo) return;
+    api
+      .getMe()
+      .then((r) => {
+        // Not connected yet: the chat page will be the connect page with the
+        // test number's QR. Get it ready now, so it appears in one go.
+        if (r.business && !r.business.whatsappConnected) prepareOnboarding(api).catch(() => {});
+        setBusiness(r.business);
+        if (r.accounts) {
+          setAccounts(r.accounts);
+        } else if (r.business) {
+          setAccounts([
+            {
+              _id: String(r.business._id || ''),
+              name: r.business.name || '',
+              wabaId: r.business.wabaId || '',
+              wabaName: r.business.meta?.wabaName || '',
+              phoneNumberId: r.business.phoneNumberId || '',
+              displayPhoneNumber: r.business.meta?.displayPhoneNumber || r.business.whatsappNumber || '',
+              verifiedName: r.business.meta?.verifiedName || r.business.name || '',
+              qualityRating: r.business.meta?.qualityRating || '',
+              numberStatus: r.business.meta?.numberStatus || '',
+              whatsappConnected: !!r.business.whatsappConnected,
+              isPrimary: true,
+            },
+          ]);
+        }
+        setCategory(r.business?.category || 'other');
+        setLabels(r.business?.labels);
+        setBusinessId(r.business?._id);
+        // Early access (features.ts): set before the state below re-renders the pages.
+        setEarlyAccess(!!r.earlyAccess);
+        setPlanState(r.planState || null);
+        // The WhatsApp Flows builder is the platform owner's: only a master-
+        // password (or admin) session gets the tab. A business uses Journeys.
+        setCanUseFlows(r.role === 'admin' || !!r.master);
+        setStaffSession(r.role === 'admin' || !!r.master);
+      })
+      .catch(() => setCategory('other')) // on failure, don't hide anything
+      .finally(() => setMeKnown(true));
+  }, [api, demo]);
+
+  useEffect(() => {
+    loadMe();
+  }, [loadMe]);
+
+  // Back from Razorpay's payment page (/api/razorpay/return): ?payment=paid |
+  // pending | failed. Said once, then taken out of the address (the
+  // crmOpen=… beside it opens Settings → Billing). While Razorpay is still
+  // confirming, Billing is read again a few times: that read asks Razorpay.
+  const notifyPay = useNotify();
+  useEffect(() => {
+    if (demo) return undefined;
+    let timers: ReturnType<typeof setTimeout>[] = [];
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const result = params.get('payment') || '';
+      if (!result) return undefined;
+      const reason = params.get('reason') || '';
+      params.delete('payment');
+      params.delete('reason');
+      const rest = params.toString();
+      window.history.replaceState(null, '', `${window.location.pathname}${rest ? `?${rest}` : ''}${window.location.hash}`);
+      const m = paymentReturnMessage(result, reason);
+      if (m) notifyPay(m.kind, m.title, m.text);
+      if (result === 'pending') {
+        timers = [8000, 20000, 45000].map((ms) => setTimeout(() => {
+          api.getBilling().then(() => loadMe()).catch(() => {});
+        }, ms));
+      }
+    } catch {
+      /* ignore */
+    }
+    return () => timers.forEach(clearTimeout);
+  }, [api, demo, loadMe, notifyPay]);
+
+  // A trial or a paid period ends at a set time: read the plan again then,
+  // so the pages lock (or the bar changes) without a reload.
+  useEffect(() => {
+    if (demo || !planState?.endsAt) return undefined;
+    const ms = new Date(planState.endsAt).getTime() - Date.now();
+    if (ms <= 0 || ms > 2 ** 31 - 1) return undefined;
+    const id = setTimeout(loadMe, ms + 2000);
+    return () => clearTimeout(id);
+  }, [demo, planState?.endsAt, loadMe]);
+
+  const planCtx = useMemo<PlanContextValue>(() => ({
+    plan: planState,
+    openPlans: (opts) => setPlansFor(opts || {}),
+    refresh: loadMe,
+  }), [planState, loadMe]);
+
+  /** The plan feature a rail page needs (null = part of every plan). */
+  // A form page lists form submissions (the answers to native WhatsApp
+  // Flows; /api/registrations), so the plan opens it with 'flows': Basic has
+  // form pages even though Orders / Appointments needs Pro.
+  // Automation opens with journeys (every plan); its WhatsApp Flows tab
+  // needs 'flows' (FlowsPage).
+  const featureOf = (v: CrmView): PlanFeature | null =>
+    isFormView(v)
+      ? 'flows'
+      : v === 'flows'
+        ? 'journeys'
+        : ['templates', 'campaigns', 'catalog', 'categories', 'members', 'offers', 'orders', 'ads', 'create', 'payment-config'].includes(v)
+          ? (v as PlanFeature)
+          : null;
+  /** The page is outside the plan: show its upgrade screen instead. */
+  const planLocked = (v: CrmView) => {
+    const f = featureOf(v);
+    return !!f && !hasFeature(planState, f);
+  };
+  // The trial or the paid plan has ended and nothing new is bought: every page
+  // shows the plans (PlanPaywall), so every sidebar link carries the crown.
+  const planEnded = !demo && planState?.status === 'free';
+  // An admin / master session chose to look past the plans (this visit only).
+  const [staffPastPaywall, setStaffPastPaywall] = useState(false);
+  const lockedRail = useMemo(() => {
+    const out: Partial<Record<CrmView, string>> = {};
+    for (const v of ['templates', 'campaigns', 'flows', 'catalog', 'categories', 'members', 'offers', 'orders', 'ads', 'create', 'payment-config'] as CrmView[]) {
+      const f = featureOf(v) as PlanFeature;
+      if (planEnded) out[v] = TIER_NAMES[tierFor(f)];
+      else if (!hasFeature(planState, f)) out[v] = TIER_NAMES[tierFor(f)];
+    }
+    if (planEnded) out.chats = TIER_NAMES.free;
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planState, planEnded]);
+
+  const vertical = useMemo(() => verticalConfig(category, labels), [category, labels]);
+
+  // ---- Form pages (sidebar → Forms): one per ready-made form ---------------
+  // The business's own forms are always there; any other form joins once it's
+  // in a flow or has answers. Read when the account is known, and again on
+  // leaving Automation (a form may have just been added to a flow).
+  const [formIndex, setFormIndex] = useState<{ flows: WaFlowDef[]; regs: Registration[]; journeys: Journey[]; known: boolean }>({ flows: [], regs: [], journeys: [], known: false });
+  const ready = demo || !!businessId;
+  const loadFormIndex = useCallback(() => {
+    Promise.all([
+      api.listFlows().then((r) => r.data || []).catch(() => [] as WaFlowDef[]),
+      api.getRegistrations().then((r) => r.data || []).catch(() => [] as Registration[]),
+      api.listJourneys().then((r) => r.data || []).catch(() => [] as Journey[]),
+    ]).then(([flows, regs, journeys]) => setFormIndex({ flows, regs, journeys, known: true }));
+  }, [api]);
+  const formsAllowed = !vertical.noForms && !!planState && hasFeature(planState, 'flows');
+  useEffect(() => {
+    if (ready && formsAllowed) loadFormIndex();
+  }, [ready, formsAllowed, loadFormIndex]);
+  const lastView = useRef(view);
+  useEffect(() => {
+    if (lastView.current === 'flows' && view !== 'flows' && ready && formsAllowed) loadFormIndex();
+    lastView.current = view;
+  }, [view, ready, formsAllowed, loadFormIndex]);
+  const formPages = useMemo(
+    () => (category ? formPagesFor(vertical, formIndex.flows, formIndex.regs) : []),
+    [category, vertical, formIndex],
+  );
+  const formRail = useMemo<FormRailItem[]>(
+    () => formPages.map((p) => ({ key: `form:${p.id}`, label: p.label, icon: p.icon })),
+    [formPages],
+  );
+  // Outside the plan (no WhatsApp Flows), the form pages carry its lock.
+  const railLocks = useMemo(() => {
+    if (hasFeature(planState, 'flows') && !planEnded) return lockedRail;
+    const out = { ...lockedRail };
+    for (const f of formRail) out[f.key] = TIER_NAMES[tierFor('flows')];
+    return out;
+  }, [lockedRail, formRail, planState, planEnded]);
+
+  // ---- Count badges on Orders and the form pages ---------------------------
+  // Like the Chats badge: how many records arrived since the page was last
+  // opened (the server remembers when, per page, so every device agrees).
+  // Finished and cancelled ones don't count. Opening the page clears it.
+  const ordersShown = vertical.showsPage('orders') && formsAllowed && hasFeature(planState, 'orders');
+  const [seenAt, setSeenAt] = useState<Record<string, string> | null>(null);
+  const [badgeOrders, setBadgeOrders] = useState<Order[]>([]);
+  const loadSeen = useCallback(() => {
+    api.getPagesSeen().then((r) => setSeenAt(r.data || {})).catch(() => {});
+  }, [api]);
+  const loadBadgeOrders = useCallback(() => {
+    if (!ordersShown) return;
+    api.getOrders().then((r) => setBadgeOrders(r.data || [])).catch(() => {});
+  }, [api, ordersShown]);
+  useEffect(() => {
+    if (!ready || !formsAllowed) return;
+    loadSeen();
+    loadBadgeOrders();
+  }, [ready, formsAllowed, loadSeen, loadBadgeOrders]);
+  // New records arrive as notifications (a new order, booking, form answer,
+  // a payment): read again, once for a burst of them.
+  const recount = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshCounts = useCallback(() => {
+    if (recount.current) clearTimeout(recount.current);
+    recount.current = setTimeout(() => {
+      recount.current = null;
+      loadBadgeOrders();
+      loadFormIndex();
+      loadSeen();
+    }, 800);
+  }, [loadBadgeOrders, loadFormIndex, loadSeen]);
+  useEffect(() => {
+    if (!notificationSocket || !formsAllowed) return undefined;
+    return notificationSocket.onNotification((e) => {
+      const n = e?.notification;
+      if (n && (/^(order_|booking_|payment_)/.test(n.type || '') || n.target?.view === 'orders')) refreshCounts();
+    });
+  }, [notificationSocket, formsAllowed, refreshCounts]);
+  // Back to the tab after a while (another device may have opened a page,
+  // or a status changed elsewhere): read again.
+  useEffect(() => {
+    if (!ready || !formsAllowed) return undefined;
+    let last = Date.now();
+    const on = () => {
+      if (document.visibilityState !== 'visible' || Date.now() - last < 30_000) return;
+      last = Date.now();
+      refreshCounts();
+    };
+    window.addEventListener('focus', on);
+    document.addEventListener('visibilitychange', on);
+    return () => {
+      window.removeEventListener('focus', on);
+      document.removeEventListener('visibilitychange', on);
+    };
+  }, [ready, formsAllowed, refreshCounts]);
+  const pageBadges = useMemo(() => {
+    const out: Partial<Record<CrmView, number>> = {};
+    if (!seenAt) return out;
+    const since = (page: string) => Date.parse(seenAt[page] || seenAt._since || '') || 0;
+    const isNew = (iso: string | undefined, page: string) => !!iso && Date.parse(iso) > since(page);
+    if (ordersShown) {
+      const n = badgeOrders.filter((o) => o.status !== 'cancelled' && o.status !== 'delivered' && isNew(o.createdAt, 'orders')).length;
+      if (n) out.orders = n;
+    }
+    const byId = new Map(formIndex.flows.map((f) => [f._id, f]));
+    for (const r of formIndex.regs) {
+      if (r.status === 'cancelled' || r.status === 'done') continue;
+      const key = `form:${presetOfSubmission(r, byId) || OTHER_FORMS}` as CrmView;
+      if (isNew(r.createdAt, key)) out[key] = (out[key] || 0) + 1;
+    }
+    return out;
+  }, [seenAt, badgeOrders, formIndex, ordersShown]);
+  // On the page (or a record arrives while it's open): it's been seen.
+  const openCount = pageBadges[view] || 0;
+  const marking = useRef('');
+  useEffect(() => {
+    if (!seenAt || (view !== 'orders' && !isFormView(view))) return;
+    if (marking.current === view) return;
+    const page = view;
+    marking.current = page;
+    setSeenAt((s) => (s ? { ...s, [page]: new Date().toISOString() } : s));
+    api.markPageSeen(page)
+      .then((r) => r.data && setSeenAt(r.data))
+      .catch(() => {})
+      .finally(() => {
+        if (marking.current === page) marking.current = '';
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, openCount, seenAt === null, api]);
+
+  // If the active view isn't available for this vertical, fall back to chats.
+  // A form page belongs to the business's forms rather than its type (unless noForms is set).
+  useEffect(() => {
+    if (
+      category &&
+      view !== 'profile' &&
+      view !== 'settings' &&
+      view !== 'channel-status' &&
+      (isFormView(view) ? vertical.noForms : !vertical.showsPage(view))
+    ) {
+      setView('chats');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category, vertical, view]);
+
+  const show = (p: CrmView) => vertical.showsPage(p);
+  // The demo shows every page, so its Flows tab stays open. Dev-only test hook
+  // (stripped from production builds): localStorage `__demoFlowsLock` = '1'
+  // applies the daily-limit lock to the demo too (its number is on 250).
+  const demoFlowsLock = demo && import.meta.env.DEV && typeof localStorage !== 'undefined' && localStorage.getItem('__demoFlowsLock') === '1';
+  // The demo is a business's view: Journeys only, pages locked until the
+  // automation uses them. Dev-only test hook `__demoStaff` = '1' shows it as a
+  // master-password session would (the Flows tab, nothing locked).
+  const demoStaff = demo && import.meta.env.DEV && typeof localStorage !== 'undefined' && localStorage.getItem('__demoStaff') === '1';
+  const staff = staffSession || demoStaff;
+
+  // ---- Sound and desktop nudge for every notification ----------------------
+  // Settings → Manage Notifications decides, per kind of event (the
+  // notification's category). A subscribed browser gets its desktop
+  // notifications from the service worker (also when the CRM is closed), so
+  // the page only shows one itself when push isn't available here.
+  const openRef = useRef<(n: AppNotification) => void>(() => {});
+  const alertFor = (n: AppNotification) => {
+    const prefs = loadPrefs();
+    const cat = n.category || 'account';
+    if (wants(prefs, cat, 'sound')) playSound(prefs.soundType);
+    if (!wants(prefs, cat, 'desktop') || pushActive()) return;
+    // The chat it's about is open and being read: it's already on screen.
+    const reading = document.visibilityState === 'visible' && document.hasFocus() && !!n.target?.phone && n.target.phone === currentlyWatching();
+    if (reading) return;
+    try {
+      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+      const note = new Notification(n.title || 'Whatcha CRM', { body: n.body || '', icon: '/logo.png', tag: `crm-${n._id}` });
+      note.onclick = () => {
+        window.focus();
+        note.close();
+        openRef.current(n);
+      };
+    } catch {
+      /* notifications not available */
+    }
+  };
+
+  // This browser's push subscription follows the signed-in business and the
+  // choices on Settings; the browser's permission can change at any time too.
+  useEffect(() => {
+    if (demo || !businessId) return undefined;
+    void syncPush(api);
+    const onPrefs = (e: Event) => void pushPrefsChanged(api, ((e as CustomEvent).detail as NotifyPrefs) || loadPrefs());
+    window.addEventListener(PREFS_EVENT, onPrefs);
+    let status: PermissionStatus | null = null;
+    const onPerm = () => void syncPush(api);
+    navigator.permissions?.query({ name: 'notifications' as PermissionName })
+      .then((st) => {
+        status = st;
+        st.addEventListener('change', onPerm);
+      })
+      .catch(() => {});
+    return () => {
+      window.removeEventListener(PREFS_EVENT, onPrefs);
+      status?.removeEventListener('change', onPerm);
+    };
+  }, [api, demo, businessId]);
+
+  // A click on a desktop notification: open what it is about (and mark it read).
+  useEffect(() => {
+    if (demo || !businessId) return undefined;
+    const open = (d: { id?: string; target?: { view?: string; id?: string; phone?: string } }) => {
+      const target = { view: d.target?.view || '', id: d.target?.id || '', phone: d.target?.phone || '' };
+      if (d.id && !String(d.id).startsWith('test-')) api.markNotificationRead(d.id).then((r) => setNotificationsUnread(r.unread || 0)).catch(() => {});
+      openRef.current({ _id: d.id || '', type: '', title: '', body: '', target, count: 1, createdAt: null, lastAt: null, readAt: null, read: true });
+    };
+    // Opened from a notification while no tab was open: /?crmOpen={…}
+    try {
+      const q = new URLSearchParams(window.location.search).get('crmOpen');
+      if (q) {
+        window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+        open(JSON.parse(q));
+      }
+    } catch {
+      /* ignore */
+    }
+    return onPushOpen(open);
+  }, [api, demo, businessId]);
+
+  // The bell's unread count: fetched once signed in, then kept live over the
+  // shell's own socket (CrmApp owns the chat socket and disconnects it). It
+  // is re-read on every reconnect, so events missed while offline are caught up.
+  useEffect(() => {
+    const refresh = () =>
+      api
+        .getUnreadNotificationCount()
+        .then((r) => setNotificationsUnread(r.count || 0))
+        .catch(() => {});
+    if (demo) {
+      refresh();
+      return undefined;
+    }
+    if (!businessId) return undefined;
+    const s = new CrmSocket(cfg.apiBase, cfg.tokenKey);
+    const offs = [
+      s.onNotification((e) => {
+        setNotificationsUnread(e?.unread ?? 0);
+        if (e?.notification) alertFor(e.notification);
+      }),
+      s.onNotificationCount((e) => setNotificationsUnread(e?.unread ?? 0)),
+      s.onConnect(refresh),
+    ];
+    refresh();
+    setNotificationSocket(s);
+    return () => {
+      offs.forEach((off) => off());
+      s.disconnect();
+      setNotificationSocket(null);
+    };
+  }, [api, cfg, demo, businessId]);
+
+  // ---- The number's real Meta status, for the top-bar widget ---------------
+  // Read on page load (the backend reuses its 5-minute Channel Status cache),
+  // kept in step with Channel Status, and re-read every 5 minutes while the
+  // number isn't CONNECTED, so a Pending number turns Connected on its own.
+  const [numberStatus, setNumberStatus] = useState<string | null>(null);
+  const hasOwnNumber = !demo && !!business?.whatsappConnected;
+  // The sidebar limit's saved figure belongs to this sign-in (the token's
+  // tail, so another account on this browser never sees it). None in the demo.
+  const limitCacheScope = useMemo(() => {
+    if (demo) return '';
+    try {
+      return (localStorage.getItem(cfg.tokenKey) || '').slice(-24);
+    } catch {
+      return '';
+    }
+  }, [demo, cfg.tokenKey]);
+  const loadNumberStatus = useCallback(() => {
+    api
+      .getChannelStatus()
+      .then((s) => setNumberStatus(String(s.number?.status || '').toUpperCase()))
+      .catch(() => setNumberStatus((prev) => prev ?? ''));
+  }, [api]);
+  useEffect(() => {
+    if (!hasOwnNumber) {
+      setNumberStatus(null);
+      return;
+    }
+    loadNumberStatus();
+  }, [hasOwnNumber, business?.phoneNumberId, loadNumberStatus]);
+  useEffect(() => {
+    if (!hasOwnNumber || numberStatus === 'CONNECTED') return undefined;
+    const id = setInterval(loadNumberStatus, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [hasOwnNumber, numberStatus, loadNumberStatus]);
+  useEffect(() => {
+    const onStatus = (e: Event) => {
+      const s = (e as CustomEvent<{ status?: string }>).detail?.status;
+      if (s) setNumberStatus(String(s).toUpperCase());
+    };
+    window.addEventListener(CHANNEL_STATUS_EVENT, onStatus);
+    return () => window.removeEventListener(CHANNEL_STATUS_EVENT, onStatus);
+  }, []);
+  // "WhatsApp number connected" arrived: read the status again.
+  useEffect(() => {
+    if (!notificationSocket || !hasOwnNumber) return undefined;
+    return notificationSocket.onNotification((e) => {
+      if (e?.notification?.type === 'whatsapp_connected') loadNumberStatus();
+    });
+  }, [notificationSocket, hasOwnNumber, loadNumberStatus]);
+  // The admin changed the plan: re-read it (trial badge, credits polling).
+  useEffect(() => {
+    if (!notificationSocket) return undefined;
+    return notificationSocket.onNotification((e) => {
+      const t = e?.notification?.type;
+      if (t === 'plan_changed' || t === 'plan_ended' || t === 'channel_disconnected') loadMe();
+    });
+  }, [notificationSocket, loadMe]);
+  // Embedded Signup left the number Pending: take the user to the Activate step.
+  useEffect(() => {
+    const onPending = (e: Event) => {
+      const a = (e as CustomEvent<SignupActivation>).detail;
+      if (a?.status) setNumberStatus(String(a.status).toUpperCase());
+      setChannelStatusTab('whatsapp');
+      setChannelStatusSubItem('connect');
+      navigate('channel-status');
+    };
+    window.addEventListener(NUMBER_ACTIVATION_EVENT, onPending);
+    return () => window.removeEventListener(NUMBER_ACTIVATION_EVENT, onPending);
+  }, [navigate]);
+
+  // A focus request is for the page it was made for; leaving that page drops it,
+  // so coming back later doesn't reopen the same record.
+  useEffect(() => {
+    if (focusRequest && focusRequest.view !== view) setFocusRequest(null);
+  }, [view, focusRequest]);
+
+  const closeNotifications = useCallback(() => setNotificationsOpen(false), []);
+
+  openRef.current = (n) => openNotification(n);
+  /** Open what a notification is about: the chat, or the record's page. */
+  function openNotification(n: AppNotification) {
+    const { view: target, id, phone } = n.target || { view: '', id: '', phone: '' };
+    if (target === 'chats' && phone) {
+      openChatFor(phone);
+      return;
+    }
+    const page = target as CrmView;
+    const always: CrmView[] = ['channel-status', 'settings', 'profile', 'payment-config'];
+    // A plan change opens Settings → Billing (the test notification: Manage Notifications).
+    if (page === 'profile' && (id === 'billing' || id === 'notifications')) {
+      try {
+        localStorage.setItem('crm_settings_active_tab', id);
+        window.dispatchEvent(new CustomEvent('crm_set_profile_tab', { detail: id }));
+      } catch {
+        // ignore
+      }
+      // The plan badge / credits follow the new plan.
+      if (id === 'billing') loadMe();
+    }
+    // Messenger / Instagram connected or disconnected: open that channel's tab.
+    if (page === 'channel-status' && (id === 'messenger' || id === 'instagram')) {
+      setChannelStatusTab(id);
+      loadMe();
+    }
+    if (page && (always.includes(page) || vertical.showsPage(page))) {
+      setFocusRequest((r) => ({ view: page, id: id || '', n: (r?.n ?? 0) + 1 }));
+      navigate(page);
+      return;
+    }
+    // The page isn't part of this business type: the customer's chat is the
+    // next best place.
+    if (phone) openChatFor(phone);
+  }
+  const focusFor = (p: CrmView) => (focusRequest?.view === p ? focusRequest : null);
+
+  // ---- Sidebar (collapsible; a drawer on small screens) + light / dark theme ----
+  const [theme, toggleTheme] = useCrmTheme();
+  // The live event (admin panel → Events): the sidebar logo and the announcement bar.
+  const liveEvent = useLiveEvent();
+  useCrmScale();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('crm_sidebar_collapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((c) => {
+      try {
+        localStorage.setItem('crm_sidebar_collapsed', c ? '0' : '1');
+      } catch {
+        /* private mode */
+      }
+      return !c;
+    });
+  }, []);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  useBackHandler(drawerOpen, () => setDrawerOpen(false));
+  const railLabels: Partial<Record<CrmView, string>> = {
+    members: vertical.memberLabel,
+    orders: vertical.ordersLabel,
+    categories: vertical.categoryPlural,
+    flows: 'Automation',
+    ...Object.fromEntries(formRail.map((f) => [f.key, f.label])),
+  };
+  // The form page open now (also one not in the sidebar yet, e.g. from a link).
+  const openForm = isFormView(view) ? formPages.find((p) => `form:${p.id}` === view) || formPageOf(view.slice(5)) : null;
+  if (openForm) railLabels[view] = openForm.label;
+
+  // Registered but WhatsApp not connected yet: every page is there, with a bar
+  // on top to connect the number (Embedded Signup).
+  const needsConnect = !demo && !!business && !business.whatsappConnected;
+
+  // ---- Locks: WhatsApp not connected, or a page the automation doesn't use yet
+  // Not connected: Automation and the pages that need the number carry a lock
+  // (each opens on its "Connect WhatsApp" screen). Connected: a form page and
+  // the Orders / Appointments / Enquiries page stay locked until a published
+  // flow or a journey fills them (flowForms.ts pagesInUse). The platform owner
+  // sees everything open.
+  const inUse = useMemo(
+    () => pagesInUse(vertical, formIndex.flows, formIndex.regs, formIndex.journeys, badgeOrders.length > 0),
+    [vertical, formIndex, badgeOrders],
+  );
+  // The platform owner sees the same locks (it looks after the business as the
+  // business sees it), and can open a locked page anyway for this visit.
+  const [openedAnyway, setOpenedAnyway] = useState<Set<string>>(() => new Set());
+  const usageLocks = useMemo(() => {
+    const out: Partial<Record<CrmView, string>> = {};
+    if (needsConnect || !formIndex.known) return out;
+    for (const f of formRail) {
+      const id = f.key.slice(5);
+      const open = id === OTHER_FORMS ? inUse.other : inUse.forms.has(id);
+      if (!open) out[f.key] = `Opens when a published WhatsApp flow uses the “${f.label}” form`;
+    }
+    if (vertical.showsPage('orders') && !inUse.orders) {
+      out.orders = `Opens when your automation takes ${vertical.ordersLabel.toLowerCase()}: a journey with a Book or Order step, or a published flow`;
+    }
+    return out;
+  }, [needsConnect, formIndex.known, formRail, inUse, vertical]);
+  /** Locked for this view right now (not opened anyway by the platform owner). */
+  const lockedNow = (v: CrmView) => !!usageLocks[v] && !(staff && openedAnyway.has(v));
+  const railExtraLocks = useMemo(() => {
+    if (!needsConnect) return usageLocks;
+    const out: Partial<Record<CrmView, string>> = {};
+    const why = 'Connect WhatsApp to open it';
+    for (const v of ['flows', 'catalog', 'categories', 'members', 'offers', 'orders', 'payment-config'] as CrmView[]) out[v] = why;
+    for (const f of formRail) out[f.key] = why;
+    return out;
+  }, [needsConnect, usageLocks, formRail]);
+  // Connecting WhatsApp is the next thing this business will do: get Meta's
+  // sign-in ready in the background, so the Connect button works on the first
+  // click instead of waiting while it loads.
+  useEffect(() => {
+    if (needsConnect || view === 'channel-status' || view === 'chats') preloadMetaSdk(api);
+  }, [needsConnect, view, api]);
+  const onConnected = useCallback(
+    (b: BusinessProfile, nextAccounts?: WhatsAppAccountSummary[]) => {
+      setBusiness(b);
+      setBusinessId(b?._id);
+      if (nextAccounts) setAccounts(nextAccounts);
+      loadMe();
+    },
+    [loadMe],
+  );
+  const addWaAccountSignup = useEmbeddedSignup(api, onConnected, business);
+
+  // Switch active BM / WhatsApp Business account in-place without reloading the page.
+  const handleSwitchAccount = useCallback(
+    async (accountId: string) => {
+      if (demo || !accountId || accountId === businessId) return;
+      const target = accounts.find((a) => a._id === accountId);
+      const targetName = target?.verifiedName || target?.wabaName || target?.name || 'WhatsApp Business';
+      setSwitchingToName(targetName);
+      setSwitchingAccount(true);
+      const startedAt = Date.now();
+      try {
+        const res = await api.switchWhatsAppAccount(accountId);
+        if (res.token) api.setToken(res.token);
+        setBusiness(res.business);
+        setBusinessId(res.business?._id);
+        if (res.accounts) setAccounts(res.accounts);
+        if (res.planState) setPlanState(res.planState);
+        const elapsed = Date.now() - startedAt;
+        if (elapsed < 320) {
+          await new Promise((r) => setTimeout(r, 320 - elapsed));
+        }
+        notifyPay('success', 'Switched WhatsApp account', `Now viewing ${res.business?.meta?.verifiedName || res.business?.name || targetName}.`);
+      } catch (e: unknown) {
+        notifyPay('error', 'Could not switch WhatsApp account', e instanceof Error ? e.message : undefined);
+      } finally {
+        setSwitchingAccount(false);
+        setSwitchingToName('');
+      }
+    },
+    [demo, businessId, accounts, api, notifyPay],
+  );
+
+  const handleDisconnectAccount = useCallback(
+    async (targetAccountId?: string) => {
+      if (demo) {
+        notifyPay('error', 'Not available in the demo', 'Sign in to your own CRM to disconnect WhatsApp.');
+        return;
+      }
+      const ok = await confirm({
+        title: 'Disconnect WhatsApp number?',
+        message:
+          'The CRM will stop receiving and sending WhatsApp messages for this number. Your existing chats, contacts, and templates stay saved, and you can reconnect at any time.',
+        confirmLabel: 'Disconnect WhatsApp',
+      });
+      if (!ok) return;
+      setSwitchingToName('Disconnecting');
+      setSwitchingAccount(true);
+      try {
+        const r = await api.disconnectWhatsApp(targetAccountId);
+        if (r.token) api.setToken(r.token);
+        onConnected(r.business, r.accounts);
+        notifyPay('success', 'WhatsApp disconnected', 'Your WhatsApp number has been disconnected.');
+      } catch (e: unknown) {
+        notifyPay('error', 'Could not disconnect WhatsApp', e instanceof Error ? e.message : undefined);
+      } finally {
+        setSwitchingAccount(false);
+        setSwitchingToName('');
+      }
+    },
+    [demo, confirm, api, onConnected, notifyPay],
+  );
+
+  return (
+    <PlanContext.Provider value={planCtx}>
+    <CallProvider
+      api={api}
+      socket={demo ? demoSocket : notificationSocket}
+      enabled={demo || hasOwnNumber}
+      demo={demo}
+      onOpenChat={openChatFor}
+      onOpenSettings={openCallingSettings}
+    >
+    <MessagingLimitProvider
+      api={api}
+      socket={demo ? demoSocket : notificationSocket}
+      enabled={demo || hasOwnNumber}
+      businessId={business?._id}
+      pending={!meKnown}
+      cacheScope={limitCacheScope}
+    >
+    <div className="crm-shell-root">
+      <EventAnnouncement event={liveEvent} />
+      <EventPreviewBadge />
+      <PlanTopBar
+        plan={planState}
+        onBuyNow={() => setPlansFor({})}
+        onViewDetails={openBilling}
+        view={view}
+        needsConnect={needsConnect}
+        onConnectClick={() => navigate('channel-status')}
+      />
+      <div className={`crm-frame${sidebarCollapsed ? ' sidebar-collapsed' : ''}${drawerOpen ? ' drawer-open' : ''}`}>
+        <NavRail
+          view={view}
+          onChange={(v) => {
+            setDrawerOpen(false);
+            navigate(v);
+          }}
+          allowed={vertical.pages}
+          badges={{ ...pageBadges, chats: unreadChats }}
+          soon={{ ads: COMING_SOON.ads, create: COMING_SOON.create }}
+          locked={railLocks}
+          labels={railLabels}
+          forms={formRail}
+          flowsFed={['orders', 'payment-config']}
+          limitBypass={staffSession || (demo && !demoFlowsLock)}
+          extraLocks={railExtraLocks}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={toggleSidebar}
+          chatChannel={chatChannel}
+          onChatChannelChange={(ch) => {
+            setDrawerOpen(false);
+            handleChatChannelChange(ch);
+          }}
+          channelBadges={channelBadges}
+          theme={theme}
+          logoLight={liveEvent?.theme.logos?.crmLight}
+          logoDark={liveEvent?.theme.logos?.crmDark}
+          onHome={() => {
+            setDrawerOpen(false);
+            navigate('chats');
+          }}
+          footer={(
+            <>
+              <SidebarPlan
+                plan={planState}
+                loading={!meKnown}
+                onOpen={() => {
+                  setDrawerOpen(false);
+                  openBilling();
+                }}
+              />
+              <SidebarMessagingLimit
+                onOpen={() => {
+                  setDrawerOpen(false);
+                  navigate('campaigns');
+                }}
+              />
+            </>
+          )}
+        />
+        <div className="crm-drawer-backdrop" onClick={() => setDrawerOpen(false)} aria-hidden="true" />
+        <div className="crm-frame-main">
+      <CrmTopNav
+        business={business}
+        demo={demo}
+        view={view}
+        onNavigate={navigate}
+        onBookDemo={() => setShowDemoModal(true)}
+        onOpenProfile={() => setProfileDrawerOpen(true)}
+        profileDrawerOpen={profileDrawerOpen}
+        notificationsUnread={notificationsUnread}
+        notificationsOpen={notificationsOpen}
+        onToggleNotifications={() => setNotificationsOpen((o) => !o)}
+        numberStatus={numberStatus}
+        title={viewLabel(view, railLabels)}
+        onOpenMenu={() => setDrawerOpen(true)}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        plan={planState}
+        onOpenBilling={openBilling}
+      />
+
+      <div className={`crm-shell${needsConnect ? ' has-connect-bar' : ''}`}>
+        <div className="crm-shell-main">
+          <div className="crm-shell-content">
+            {/* Keep the chat view mounted so its socket + state persist across tabs. */}
+            <div className="shell-pane" style={{ display: view === 'chats' ? 'block' : 'none' }}>
+              <CrmApp
+                config={config}
+                demo={demo}
+                openRequest={chatRequest}
+                businessId={businessId}
+                business={business}
+                visible={view === 'chats'}
+                onUnreadChange={setUnreadChats}
+                needsConnect={needsConnect}
+                accountKnown={meKnown}
+                businessName={business?.name || (business?.ownerFirstName ? `${business.ownerFirstName} ${business.ownerLastName || ''}`.trim() : '')}
+                businessAvatar={business?.profilePicture || business?.avatarUrl || business?.meta?.profilePictureUrl || ''}
+                onConnectClick={() => addWaAccountSignup.connect()}
+                onOpenTemplatesPage={() => navigate('templates')}
+                onOpenTemplateCreate={handleOpenTemplateCreate}
+                channelTab={chatChannel}
+                onChannelTabChange={handleChatChannelChange}
+                onChannelBadgesChange={setChannelBadges}
+                accounts={accounts}
+                activeDisplayPhone={business?.meta?.displayPhoneNumber || business?.whatsappNumber || ''}
+                switchingAccount={switchingAccount}
+                switchingToName={switchingToName}
+                onSwitchAccount={handleSwitchAccount}
+                onAddAccount={() => addWaAccountSignup.connect()}
+                onDisconnectAccount={handleDisconnectAccount}
+                onNavigate={pageNavigate}
+                onMetaChannelsConnected={(info) => {
+                  if (business) {
+                    setBusiness({
+                      ...business,
+                      instagramConnected: info.connections?.instagram?.status === 'connected',
+                      instagramUsername: info.connections?.instagram?.igUsername || undefined,
+                      instagramAccounts: info.instagramAccounts || [],
+                      messengerConnected: info.connections?.messenger?.status === 'connected',
+                      messengerPageName: info.connections?.messenger?.pageName || undefined,
+                      messengerAccounts: info.messengerAccounts || [],
+                    });
+                  }
+                }}
+                instagramAccounts={business?.instagramAccounts}
+                messengerAccounts={business?.messengerAccounts}
+                isInstagramConnected={business?.instagramConnected}
+                isMessengerConnected={business?.messengerConnected}
+                instagramUsername={business?.instagramUsername}
+                messengerPageName={business?.messengerPageName}
+              />
+            </div>
+            {/* The trial or the paid plan has ended and nothing new is bought:
+                the plans over every page, Settings (Billing, the profile) excepted.
+                The platform owner (admin / master session) sees them too, and can
+                step past them for this visit to look after the account. */}
+            {planEnded && planState && !staffPastPaywall && view !== 'profile' && view !== 'settings' && (
+              <PlanPaywall
+                api={api}
+                plan={planState}
+                onOpenBilling={openBilling}
+                onStaffContinue={staffSession ? () => setStaffPastPaywall(true) : undefined}
+              />
+            )}
+            {/* A page outside the business's plan: its upgrade screen (Ads / Create stay 'coming soon'). */}
+            {planLocked(view) && !(view === 'ads' && COMING_SOON.ads) && !(view === 'create' && COMING_SOON.create) && (view === 'payment-config' || isFormView(view) || show(view)) && (
+              <PlanLockedPage feature={featureOf(view) as PlanFeature} vertical={vertical} />
+            )}
+            {/* A form page or Orders the automation doesn't fill yet. */}
+            {lockedNow(view) && !planLocked(view) && (view === 'orders' ? show('orders') : !!openForm) && (
+              <AutomationLockedPage
+                label={railLabels[view] || viewLabel(view, railLabels)}
+                form={openForm?.preset?.title}
+                ordersWord={vertical.ordersLabel.toLowerCase()}
+                onOpenAutomation={() => navigate('flows')}
+                onOpenAnyway={staff ? () => setOpenedAnyway((s) => new Set(s).add(view)) : undefined}
+              />
+            )}
+            {openForm && !planLocked(view) && !lockedNow(view) && (
+              needsConnect ? (
+                <WhatsAppConnectRequired page="orders" api={api} business={business} onConnected={onConnected} />
+              ) : (
+                <FormSubmissionsPage
+                  key={openForm.id}
+                  api={api}
+                  page={openForm}
+                  vertical={vertical}
+                  openId={formSubmissionId}
+                  onOpenChange={setFormSubmissionId}
+                  onOpenChat={openChatFor}
+                  onOpenFlows={() => navigate('flows')}
+                  onChanged={loadFormIndex}
+                />
+              )
+            )}
+            {/* Every business has a profile, whatever its type. */}
+            {(view === 'profile' || view === 'settings') && (
+              <ProfilePage
+                api={api}
+                demo={demo}
+                business={business}
+                onNavigate={navigate}
+              />
+            )}
+            {view === 'templates' && show('templates') && !planLocked('templates') && (
+              <TemplatesPage
+                api={api}
+                registerDirty={registerDirty}
+                business={business}
+                demo={demo}
+                onNavigate={pageNavigate}
+                initialMode={templateInitialMode}
+                onModeChange={setTemplateInitialMode}
+                focusRequest={focusFor('templates')}
+                tabRequest={templatesTabRequest}
+              />
+            )}
+            {view === 'campaigns' && show('campaigns') && !planLocked('campaigns') && (
+              <CampaignsPage
+                api={api}
+                business={business}
+                demo={demo}
+                onNavigate={pageNavigate}
+                focusRequest={focusFor('campaigns')}
+                startRequest={campaignStart}
+                onStartRequestHandled={() => setCampaignStart(null)}
+                onOpenChat={openChatFor}
+              />
+            )}
+            {view === 'flows' && show('flows') && !planLocked('flows') && (
+              needsConnect ? (
+                <WhatsAppConnectRequired page="flows" api={api} business={business} onConnected={onConnected} />
+              ) : (
+              <FlowsPage
+                api={api}
+                canUseFlows={canUseFlows || demoStaff}
+                limitBypass={staffSession || (demo && !demoFlowsLock)}
+                registerDirty={registerDirty}
+                vertical={vertical}
+                business={business}
+                demo={demo}
+                onNavigate={pageNavigate}
+              />
+              )
+            )}
+            {view === 'catalog' && show('catalog') && !planLocked('catalog') && (
+              needsConnect ? (
+                <WhatsAppConnectRequired page="catalog" api={api} business={business} onConnected={onConnected} />
+              ) : (
+                <CatalogPage
+                  api={api}
+                  vertical={vertical}
+                  business={business}
+                  demo={demo}
+                  onBusinessUpdated={(b) => setBusiness(b)}
+                  onOpenCategories={vertical.showsPage('categories') ? () => navigate('categories') : undefined}
+                />
+              )
+            )}
+            {view === 'categories' && show('categories') && !planLocked('categories') && (
+              needsConnect ? (
+                <WhatsAppConnectRequired page="categories" api={api} business={business} onConnected={onConnected} />
+              ) : (
+                <CategoriesPage api={api} vertical={vertical} business={business} demo={demo} onConnected={onConnected} />
+              )
+            )}
+            {view === 'members' && show('members') && !planLocked('members') && (
+              needsConnect ? (
+                <WhatsAppConnectRequired page="members" api={api} business={business} onConnected={onConnected} />
+              ) : (
+                <MembersPage api={api} vertical={vertical} business={business} demo={demo} onConnected={onConnected} onOpenCategories={vertical.showsPage('categories') ? () => navigate('categories') : undefined} />
+              )
+            )}
+            {view === 'offers' && show('offers') && !planLocked('offers') && (
+              needsConnect ? (
+                <WhatsAppConnectRequired page="offers" api={api} business={business} onConnected={onConnected} />
+              ) : (
+                <OffersPage api={api} business={business} demo={demo} onConnected={onConnected} />
+              )
+            )}
+            {view === 'ads' && show('ads') && (
+              COMING_SOON.ads ? (
+                <ComingSoonPage feature="ads" title="Ads" onBack={() => navigate('chats')} />
+              ) : needsConnect ? (
+                <WhatsAppConnectRequired page="ads" api={api} business={business} onConnected={onConnected} />
+              ) : (
+                <AdsPage
+                  api={api}
+                  demo={demo}
+                  business={business}
+                  onBusinessUpdated={(b) => setBusiness(b)}
+                  onOpenChat={openChatFor}
+                  focusRequest={focusFor('ads')}
+                />
+              )
+            )}
+            {view === 'create' && show('create') && (
+              COMING_SOON.create ? (
+                <ComingSoonPage feature="create" title="Create" onBack={() => navigate('chats')} />
+              ) : (
+                <CreatePage api={api} demo={demo} onNavigate={pageNavigate} focusRequest={focusFor('create')} />
+              )
+            )}
+            {view === 'payment-config' && show('payment-config') && !planLocked('payment-config') && (
+              needsConnect ? (
+                <WhatsAppConnectRequired page="payment-config" api={api} business={business} onConnected={onConnected} />
+              ) : (
+                <PaymentConfigPage
+                  api={api}
+                  demo={demo}
+                  business={business}
+                  onBusinessUpdated={(b) => setBusiness(b)}
+                  onConnected={onConnected}
+                  onNavigate={navigate}
+                />
+              )
+            )}
+            {view === 'channel-status' && (
+              <ChannelStatusPage
+                api={api}
+                demo={demo}
+                business={business}
+                onConnected={onConnected}
+                accounts={accounts}
+                switchingAccount={switchingAccount}
+                switchingToName={switchingToName}
+                onSwitchAccount={handleSwitchAccount}
+                onOpenChat={openChatFor}
+                onNavigate={navigate}
+                initialTab={channelStatusTab}
+                onTabChange={setChannelStatusTab}
+                initialSubItem={channelStatusSubItem}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+        </div>
+      </div>
+
+      {plansFor && (
+        <BuyPlanModal
+          api={api}
+          plan={planState}
+          highlightTier={plansFor.tier}
+          reason={plansFor.reason}
+          onClose={() => setPlansFor(null)}
+          onPaid={(p) => {
+            setPlanState(p);
+            loadMe();
+          }}
+        />
+      )}
+      {showDemoModal && <DemoModal onClose={() => setShowDemoModal(false)} />}
+      {!demo && <OtherAppsDialog api={api} business={business} onConnected={onConnected} />}
+      <NotificationDrawer
+        isOpen={notificationsOpen}
+        onClose={closeNotifications}
+        api={api}
+        socket={notificationSocket}
+        onUnreadChange={setNotificationsUnread}
+        onOpen={openNotification}
+      />
+      <ProfileSidebarDrawer
+        isOpen={profileDrawerOpen}
+        onClose={() => setProfileDrawerOpen(false)}
+        api={api}
+        business={business}
+        demo={demo}
+        onNavigate={navigate}
+        onOpenChannelStatus={handleOpenChannelStatus}
+        onLogout={onLogout}
+        socket={demo ? demoSocket : notificationSocket}
+      />
+    </div>
+    </MessagingLimitProvider>
+    </CallProvider>
+    </PlanContext.Provider>
+  );
+}
+
+/**
+ * The demo's plan: the free trial (every feature), 6 days left. Setting
+ * localStorage '__demoPlan' to a tier ('free', 'basic', 'pro') shows that
+ * plan instead, to see its locks.
+ */
+function demoPlan(): PlanState {
+  let tier: PlanTierKey | '' = '';
+  try {
+    const t = localStorage.getItem('__demoPlan') || '';
+    if (t === 'free' || t === 'basic' || t === 'pro' || t === 'premium') tier = t;
+  } catch { /* private mode */ }
+  if (tier) {
+    return {
+      tier,
+      name: TIER_NAMES[tier],
+      status: 'active',
+      endsAt: new Date(Date.now() + 20 * 24 * 60 * 60 * 1000).toISOString(),
+      daysLeft: 20,
+      endingSoon: false,
+      cycle: 'monthly',
+      limits: LIMITS[tier],
+    };
+  }
+  return {
+    tier: 'premium',
+    name: 'Premium',
+    status: 'trial',
+    endsAt: new Date(Date.now() + 6 * 24 * 60 * 60 * 1000 - 60000).toISOString(),
+    daysLeft: 6,
+    endingSoon: false,
+    limits: LIMITS.premium,
+  };
+}

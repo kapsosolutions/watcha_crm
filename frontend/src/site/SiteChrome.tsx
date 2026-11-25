@@ -1,0 +1,484 @@
+// The website's frame, on every public page: the black strip, the header with
+// the Solutions / Product / Resources / API / Pricing menus, the mobile menu,
+// the footer and the WhatsApp button. SitePage wraps a page in all of it.
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { DemoModal } from './DemoModal';
+import { BookDemoSvg } from '../crm/components/TemplateIcons';
+import { platformApi } from '../admin/platformApi';
+import { FOOTER_COLUMNS, MENUS, type Menu, type MenuLink } from './siteMenus';
+import { SiteIcon } from './SiteIcons';
+import { cssUrl, useImageRatio, useLiveEvent } from '../event/liveEvent';
+import { EventPreviewBadge } from '../event/EventPreviewBadge';
+import { onSiteLinkClick, useSitePath, useSeo } from './siteNav';
+import type { SitePageMeta } from './siteMeta';
+import './site.css';
+import './site-pages.css';
+
+export const BRAND = 'Whatcha';
+export const SALES_PHONE = '072 893 2456';
+export const SALES_TEL = 'tel:+27728932456';
+export const WHATSAPP_HREF = 'https://wa.me/27728932456';
+export const SUPPORT_EMAIL = 'hello@whatcha.co.za';
+export const FOUNDER_EMAIL = 'kgupi@whatcha.co.za';
+export const WEBSITE_URL = 'https://whatcha.co.za';
+
+/** An internal link that doesn't reload the page. */
+export function SiteLink({ href, className, children, onClick, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) {
+  return (
+    <a
+      href={href}
+      className={className}
+      onClick={(e) => {
+        onClick?.(e);
+        onSiteLinkClick(e);
+      }}
+      {...rest}
+    >
+      {children}
+    </a>
+  );
+}
+
+const API_SNIPPET = `curl -X POST \\
+  https://whatcha.co.za/api/v1/messages/template \\
+  -H "Authorization: Bearer $WHATCHA_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"to":"+27728932456","template":"order_update",
+       "variables":["John","#1042"]}'`;
+
+function MenuItem({ l, onPick }: { l: MenuLink; onPick: () => void }) {
+  return (
+    <SiteLink href={l.href} className="sx-menu-link" onClick={onPick}>
+      <span className="sx-menu-ico" aria-hidden="true"><SiteIcon name={l.icon} /></span>
+      <span className="sx-menu-text">
+        <span className="sx-menu-label">
+          {l.label}
+          {l.badge && <span className="sx-menu-badge">{l.badge}</span>}
+        </span>
+        {l.desc && <span className="sx-menu-desc">{l.desc}</span>}
+      </span>
+    </SiteLink>
+  );
+}
+
+function MenuPanel({ menu, onPick }: { menu: Menu; onPick: () => void }) {
+  return (
+    <div className={`sx-panel sx-panel-${menu.key}`} role="menu" data-testid={`menu-panel-${menu.key}`}>
+      <div className="sx-panel-groups">
+        {menu.groups.map((g) => (
+          <div key={g.title} className={`sx-panel-group${g.tinted ? ' tinted' : ''}${g.links.length > 5 ? ' wide' : ''}`}>
+            <div className="sx-panel-title">{g.title}</div>
+            <div className={`sx-panel-links${g.links.length > 5 ? ' two-col' : ''}`}>
+              {g.links.map((l) => <MenuItem key={l.href + l.label} l={l} onPick={onPick} />)}
+            </div>
+          </div>
+        ))}
+      </div>
+      {menu.key === 'api' && (
+        <div className="sx-panel-dev">
+          <div className="sx-panel-title light">For developers</div>
+          <pre className="sx-panel-code"><code>{API_SNIPPET}</code></pre>
+          <SiteLink href="/docs" className="sx-dev-link" onClick={onPick}>API reference <span aria-hidden="true">↗</span></SiteLink>
+          <SiteLink href="/docs#authentication" className="sx-dev-link" onClick={onPick}>Authentication &amp; keys <span aria-hidden="true">↗</span></SiteLink>
+          <SiteLink href="/docs#errors" className="sx-dev-link" onClick={onPick}>Errors &amp; rate limits <span aria-hidden="true">↗</span></SiteLink>
+          <SiteLink href="/pricing" className="sx-dev-link" onClick={onPick}>Plans with the API <span aria-hidden="true">↗</span></SiteLink>
+        </div>
+      )}
+      {menu.key === 'solutions' && (
+        <div className="sx-panel-aside">
+          <div className="sx-panel-title">Built for your business</div>
+          <p>Pick your business type when you sign up: the CRM names things your way (Doctors, Stylists, Rooms…) and opens the pages you need.</p>
+          <SiteLink href="/solutions" className="sx-aside-link" onClick={onPick}>See every industry →</SiteLink>
+        </div>
+      )}
+      {menu.more && menu.key !== 'solutions' && (
+        <SiteLink href={menu.more.href} className="sx-panel-more" onClick={onPick}>{menu.more.label} →</SiteLink>
+      )}
+    </div>
+  );
+}
+
+export function SiteHeader({ compact = false, onBookDemo }: { compact?: boolean; onBookDemo?: () => void }) {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [open, setOpen] = useState<string | null>(null);
+  const [mobileGroup, setMobileGroup] = useState<string | null>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
+  const path = useSitePath();
+  const signedIn = platformApi.businessLoggedIn();
+  const logo = useLiveEvent()?.theme.logos?.site || '/logo.png';
+  // With an event hero the header sits on the hero's image while the page is
+  // at the top (site-pages.css .ev-stage), and turns white once scrolled.
+  // Its height lets the hero reach up under it (--lp-header-h).
+  const headerRef = useRef<HTMLElement>(null);
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const on = () => setScrolled(window.scrollY > 4);
+    on();
+    window.addEventListener('scroll', on, { passive: true });
+    return () => window.removeEventListener('scroll', on);
+  }, []);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return undefined;
+    const set = () => document.documentElement.style.setProperty('--lp-header-h', `${el.offsetHeight}px`);
+    set();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(set) : null;
+    ro?.observe(el);
+    return () => ro?.disconnect();
+  }, []);
+
+  // A new page closes every menu.
+  useEffect(() => {
+    setOpen(null);
+    setSidebarOpen(false);
+  }, [path]);
+
+  useEffect(() => {
+    document.body.style.overflow = sidebarOpen ? 'hidden' : '';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [sidebarOpen]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSidebarOpen(false);
+        setOpen(null);
+      }
+    };
+    const onDown = (e: PointerEvent) => {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) setOpen(null);
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('pointerdown', onDown);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('pointerdown', onDown);
+    };
+  }, []);
+
+  const hover = (key: string | null) => {
+    window.clearTimeout(closeTimer.current);
+    if (key) setOpen(key);
+    else closeTimer.current = window.setTimeout(() => setOpen(null), 160);
+  };
+
+  const bookDemo = () => {
+    setSidebarOpen(false);
+    if (onBookDemo) onBookDemo();
+    else window.location.href = '/#/register';
+  };
+
+  return (
+    <>
+      <EventPreviewBadge />
+      {!compact && (
+        <div className="lp-top-bar">
+          <div className="lp-top-bar-container">
+            <div className="lp-top-bar-right">
+              <SiteLink href="/help" className="lp-top-bar-link lp-top-bar-contact">Help</SiteLink>
+              <SiteLink href="/contact" className="lp-top-bar-link">Contact</SiteLink>
+              {signedIn ? (
+                <a href="/#/" className="lp-top-bar-link lp-top-bar-login">Open CRM</a>
+              ) : (
+                <a href="/#/login" className="lp-top-bar-link lp-top-bar-login">Log in</a>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <header ref={headerRef} className={`lp-header sx-header${compact ? ' compact' : ''}${scrolled ? ' scrolled' : ''}`}>
+        <SiteLink className="lp-brand" href="/" aria-label={BRAND}>
+          <img className="lp-brand-logo" src={logo} alt={BRAND} />
+        </SiteLink>
+
+        <nav className="sx-nav lp-desktop-only" aria-label="Main" ref={navRef} onMouseLeave={() => hover(null)}>
+          {MENUS.map((m) => (
+            <div key={m.key} className={`sx-nav-item${open === m.key ? ' open' : ''}`} onMouseEnter={() => hover(m.key)}>
+              <button
+                type="button"
+                className={`sx-nav-btn${open === m.key ? ' on' : ''}`}
+                aria-expanded={open === m.key}
+                aria-haspopup="true"
+                onClick={() => setOpen((o) => (o === m.key ? null : m.key))}
+                data-testid={`menu-${m.key}`}
+              >
+                {m.label}
+                <svg className="sx-nav-chev" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z" /></svg>
+              </button>
+              {open === m.key && <MenuPanel menu={m} onPick={() => setOpen(null)} />}
+            </div>
+          ))}
+          <SiteLink href="/pricing" className={`sx-nav-btn${path === '/pricing' ? ' on' : ''}`} data-testid="menu-pricing">Pricing</SiteLink>
+        </nav>
+
+        <div className="lp-actions">
+          <button type="button" className="lp-nav-pill-btn book-demo lp-desktop-only" onClick={bookDemo}>
+            <BookDemoSvg width={16} height={16} />
+            <span>Book a demo</span>
+          </button>
+          {signedIn ? (
+            <a className="lp-nav-pill-btn try-free lp-desktop-only" href="/#/">Open CRM</a>
+          ) : (
+            <a className="lp-nav-pill-btn try-free lp-desktop-only" href="/#/register">Try for free</a>
+          )}
+          <label className="burger" htmlFor="burger" aria-label="Open navigation menu">
+            <input type="checkbox" id="burger" checked={sidebarOpen} onChange={(e) => setSidebarOpen(e.target.checked)} />
+            <span />
+            <span />
+            <span />
+          </label>
+        </div>
+      </header>
+
+      <div className={`lp-sidebar-overlay ${sidebarOpen ? 'open' : ''}`} onClick={() => setSidebarOpen(false)} aria-hidden="true" />
+      <aside className={`lp-mobile-sidebar ${sidebarOpen ? 'open' : ''}`} aria-label="Mobile Navigation" aria-hidden={!sidebarOpen}>
+        <div className="lp-sidebar-header">
+          <SiteLink className="lp-brand" href="/" onClick={() => setSidebarOpen(false)} aria-label={BRAND}>
+            <img className="lp-brand-logo" src={logo} alt={BRAND} />
+          </SiteLink>
+          <button type="button" className="lp-sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="Close navigation menu">✕</button>
+        </div>
+        <nav className="lp-sidebar-nav sx-mnav">
+          {MENUS.map((m) => (
+            <div key={m.key} className={`sx-mnav-group${mobileGroup === m.key ? ' open' : ''}`}>
+              <button type="button" className="sx-mnav-head" aria-expanded={mobileGroup === m.key} onClick={() => setMobileGroup((g) => (g === m.key ? null : m.key))}>
+                {m.label}
+                <span className="material-icons" aria-hidden="true">expand_more</span>
+              </button>
+              {mobileGroup === m.key && (
+                <div className="sx-mnav-body">
+                  {m.groups.map((g) => (
+                    <div key={g.title}>
+                      <div className="sx-mnav-title">{g.title}</div>
+                      {g.links.map((l) => (
+                        <SiteLink key={l.href + l.label} href={l.href} className="sx-mnav-link" onClick={() => setSidebarOpen(false)}>
+                          <span className="sx-menu-ico" aria-hidden="true"><SiteIcon name={l.icon} /></span>
+                          {l.label}
+                          {l.badge && <span className="sx-menu-badge">{l.badge}</span>}
+                        </SiteLink>
+                      ))}
+                    </div>
+                  ))}
+                  {m.more && <SiteLink href={m.more.href} className="sx-mnav-more" onClick={() => setSidebarOpen(false)}>{m.more.label} →</SiteLink>}
+                </div>
+              )}
+            </div>
+          ))}
+          <SiteLink href="/pricing" className="sx-mnav-head" onClick={() => setSidebarOpen(false)}>Pricing</SiteLink>
+          <SiteLink href="/contact" className="sx-mnav-head" onClick={() => setSidebarOpen(false)}>Contact</SiteLink>
+          <button type="button" className="sx-mnav-head" onClick={bookDemo}>Book a demo</button>
+        </nav>
+        <div className="lp-sidebar-footer">
+          {signedIn ? (
+            <a href="/#/" className="lp-sidebar-btn primary" onClick={() => setSidebarOpen(false)}>Open CRM →</a>
+          ) : (
+            <>
+              <a href="/#/register" className="lp-sidebar-btn primary" onClick={() => setSidebarOpen(false)}>Try for free →</a>
+              <a href="/#/login" className="lp-sidebar-btn secondary" onClick={() => setSidebarOpen(false)}>Log in to Account</a>
+            </>
+          )}
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function MetaMark({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M6.915 4.03c-1.968 0-3.683 1.28-4.871 3.113C.704 9.208 0 11.883 0 14.449c0 .706.07 1.369.21 1.973a6.624 6.624 0 0 0 .265.86 5.297 5.297 0 0 0 .371.761c.696 1.159 1.818 1.927 3.593 1.927 1.497 0 2.633-.671 3.965-2.444.76-1.012 1.144-1.626 2.663-4.32l.756-1.339.186-.325c.061.1.121.196.183.3l2.152 3.595c.724 1.21 1.665 2.556 2.47 3.314 1.046.987 1.992 1.22 3.06 1.22 1.075 0 1.876-.355 2.455-.843a3.743 3.743 0 0 0 .81-.973c.542-.939.861-2.127.861-3.745 0-2.72-.681-5.357-2.084-7.45-1.282-1.912-2.957-2.93-4.716-2.93-1.047 0-2.088.467-3.053 1.308-.652.57-1.257 1.29-1.82 2.05-.69-.875-1.335-1.547-1.958-2.056-1.182-.966-2.315-1.303-3.454-1.303zm10.16 2.053c1.147 0 2.188.758 2.992 1.999 1.132 1.748 1.647 4.195 1.647 6.4 0 1.548-.368 2.9-1.839 2.9-.58 0-1.027-.23-1.664-1.004-.496-.601-1.343-1.878-2.832-4.358l-.617-1.028a44.908 44.908 0 0 0-1.255-1.98c.07-.109.141-.224.211-.327 1.12-1.667 2.118-2.602 3.358-2.602zm-10.201.553c1.265 0 2.058.791 2.675 1.446.307.327.737.871 1.234 1.579l-1.02 1.566c-.757 1.163-1.882 3.017-2.837 4.338-1.191 1.649-1.81 1.817-2.486 1.817-.524 0-1.038-.237-1.383-.794-.263-.426-.464-1.13-.464-2.046 0-2.221.63-4.535 1.66-6.088.454-.687.964-1.226 1.533-1.533a2.264 2.264 0 0 1 1.088-.285z" fill="#0081FB" />
+    </svg>
+  );
+}
+
+export function SiteFooter() {
+  const logo = useLiveEvent()?.theme.logos?.site || '/logo.png';
+  return (
+    <footer className="lp-footer sx-footer">
+      <div className="lp-footer-container">
+        <div className="sx-footer-grid">
+          <div className="lp-footer-brand-col">
+            <SiteLink href="/" className="lp-brand" aria-label={BRAND}>
+              <img className="lp-brand-logo sx-footer-logo" src={logo} alt={BRAND} />
+            </SiteLink>
+            <p className="sx-footer-about">WhatsApp CRM, automation and the official WhatsApp Business API for growing businesses.</p>
+            <div className="lp-footer-meta-badge">
+              <MetaMark className="lp-footer-meta-svg" />
+              <div className="lp-footer-meta-texts">
+                <span className="lp-footer-meta-title">Meta</span>
+                <span className="lp-footer-meta-role">Business Partner</span>
+              </div>
+            </div>
+            <div className="sx-footer-contact" id="footer-contact">
+              <a href={SALES_TEL}>Sales {SALES_PHONE}</a>
+              <a href={WHATSAPP_HREF} target="_blank" rel="noopener noreferrer">WhatsApp us</a>
+              <a href="mailto:hello@whatcha.co.za">hello@whatcha.co.za</a>
+              <a href="mailto:kgupi@whatcha.co.za">kgupi@whatcha.co.za</a>
+              <a href="https://whatcha.co.za" target="_blank" rel="noopener noreferrer">whatcha.co.za</a>
+            </div>
+            <div className="lp-footer-social-row">
+              <a href="https://whatcha.co.za" target="_blank" rel="noopener noreferrer" aria-label="Website" className="lp-footer-social-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
+              </a>
+            </div>
+          </div>
+          {FOOTER_COLUMNS.map((c) => (
+            <div key={c.title} className="lp-footer-nav-col">
+              <h4 className="lp-footer-col-heading">{c.title}</h4>
+              <ul className="lp-footer-link-list">
+                {c.links.map((l) => (
+                  <li key={l.href}><SiteLink href={l.href}>{l.label}</SiteLink></li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <div className="sx-footer-bottom">
+          <span>© {new Date().getFullYear()} {BRAND} Solutions (Pty) Ltd · whatcha.co.za</span>
+          <span>Made with <span aria-label="love">❤️</span> in South Africa</span>
+        </div>
+      </div>
+    </footer>
+  );
+}
+
+export function WhatsAppFloat() {
+  // An event can swap the button for its own image (a festive icon or GIF).
+  const wa = useLiveEvent()?.theme.whatsapp;
+  return (
+    <a
+      href={`${WHATSAPP_HREF}?text=${encodeURIComponent('Hello Whatcha Team! I would like to learn more about your WhatsApp CRM.')}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`lp-wa-float-btn${wa?.image ? ' ev-image' : ''}`}
+      aria-label="Chat with us on WhatsApp"
+      title="Chat with us on WhatsApp"
+      data-testid="wa-float"
+    >
+      <span className="lp-wa-float-pulse" aria-hidden="true" />
+      <span className="lp-wa-float-tooltip">{wa?.tooltip || 'Chat with us 👋'}</span>
+      {wa?.image ? (
+        <img className="lp-wa-float-img" src={wa.image} alt="" aria-hidden="true" />
+      ) : (
+      <div className="lp-wa-float-icon-wrap">
+        <svg className="lp-wa-float-svg" viewBox="0 0 175.216 175.552" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <linearGradient id="waFloatGrad2" x1="85.915" x2="86.535" y1="32.567" y2="137.092" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stopColor="#0cbc04" />
+              <stop offset="1" stopColor="#088f03" />
+            </linearGradient>
+          </defs>
+          <path fill="#ffffff" d="m12.966 161.238 10.439-38.114a73.42 73.42 0 0 1-9.821-36.772c.017-40.556 33.021-73.55 73.578-73.55 19.681.01 38.154 7.669 52.047 21.572s21.537 32.383 21.53 52.037c-.018 40.553-33.027 73.553-73.578 73.553h-.032c-12.313-.005-24.412-3.094-35.159-8.954z" />
+          <path fill="url(#waFloatGrad2)" d="M87.184 25.227c-33.733 0-61.166 27.423-61.178 61.13a60.98 60.98 0 0 0 9.349 32.535l1.455 2.313-6.179 22.558 23.146-6.069 2.235 1.324c9.387 5.571 20.15 8.517 31.126 8.523h.023c33.707 0 61.14-27.426 61.153-61.135a60.75 60.75 0 0 0-17.895-43.251 60.75 60.75 0 0 0-43.235-17.928z" />
+          <path fill="#ffffff" fillRule="evenodd" d="M68.772 55.603c-1.378-3.061-2.828-3.123-4.137-3.176l-3.524-.043c-1.226 0-3.218.46-4.902 2.3s-6.435 6.287-6.435 15.332 6.588 17.785 7.506 19.013 12.718 20.381 31.405 27.75c15.529 6.124 18.689 4.906 22.061 4.6s10.877-4.447 12.408-8.74 1.532-7.971 1.073-8.74-1.685-1.226-3.525-2.146-10.877-5.367-12.562-5.981-2.91-.919-4.137.921-4.746 5.979-5.819 7.206-2.144 1.381-3.984.462-7.76-2.861-14.784-9.124c-5.465-4.873-9.154-10.891-10.228-12.73s-.114-2.835.808-3.751c.825-.824 1.838-2.147 2.759-3.22s1.224-1.84 1.836-3.065.307-2.301-.153-3.22-4.032-10.011-5.666-13.647" />
+        </svg>
+      </div>
+      )}
+    </a>
+  );
+}
+
+/**
+ * The live event's hero background for a section: class names and the CSS
+ * variables site-pages.css reads (image, overlay strength, text tone).
+ */
+type EventHero = { heroBg?: string; heroBgTablet?: string; heroBgMobile?: string; tone?: 'dark' | 'light'; overlay?: number; accent?: string };
+/** Height ÷ width of the desktop, tablet and mobile backgrounds (0 = not known). */
+type HeroRatios = { desktop?: number; tablet?: number; mobile?: number };
+
+/**
+ * The live event's hero background for a section: class names and the CSS
+ * variables site-pages.css reads (the image for desktop / tablet / mobile,
+ * their height ÷ width, the overlay strength, the text tone).
+ */
+export function eventHeroProps(h?: EventHero, ratios: HeroRatios = {}): { className: string; style?: CSSProperties } {
+  const bg = cssUrl(h?.heroBg);
+  const tablet = cssUrl(h?.heroBgTablet);
+  const mobile = cssUrl(h?.heroBgMobile);
+  const any = !!(bg || tablet || mobile);
+  if (!any && !h?.accent) return { className: '' };
+  // A size not uploaded is simply not set: the CSS falls back to the next larger one.
+  const style = {
+    ...(bg ? { '--ev-hero-bg': bg } : {}),
+    ...(tablet ? { '--ev-hero-bg-tablet': tablet } : {}),
+    ...(mobile ? { '--ev-hero-bg-mobile': mobile } : {}),
+    ...(bg && ratios.desktop ? { '--ev-hero-ratio': String(ratios.desktop) } : {}),
+    ...(tablet && ratios.tablet ? { '--ev-hero-ratio-tablet': String(ratios.tablet) } : {}),
+    ...(mobile && ratios.mobile ? { '--ev-hero-ratio-mobile': String(ratios.mobile) } : {}),
+    ...(any ? { '--ev-hero-overlay': String(Math.min(90, Math.max(0, h?.overlay || 0)) / 100) } : {}),
+    ...(h?.accent ? { '--ev-accent': h.accent } : {}),
+  } as CSSProperties;
+  // A size without its own picture borrows a larger one: shown whole across
+  // the width (ev-fit-*) rather than scaled up to the hero's height, which on
+  // a narrow, tall hero cut off the picture's sides (garlands, borders).
+  const fit = `${any && !tablet ? ' ev-fit-tablet' : ''}${any && !mobile ? ' ev-fit-mobile' : ''}`;
+  return { className: `${any ? ' ev-hero' : ''}${any && h?.tone === 'light' ? ' ev-light' : ''}${fit}`, style };
+}
+
+/** eventHeroProps with the backgrounds' proportions read from the images. */
+export function useEventHeroProps(h?: EventHero) {
+  const desktop = useImageRatio(h?.heroBg);
+  const tablet = useImageRatio(h?.heroBgTablet);
+  const mobile = useImageRatio(h?.heroBgMobile);
+  return eventHeroProps(h, { desktop, tablet, mobile });
+}
+
+/** A content page: header, the page, the footer, the WhatsApp button, the demo dialog. */
+export function SitePage({ meta, children, className = '', noindex = false }: { meta?: SitePageMeta; children: (openDemo: () => void) => ReactNode; className?: string; noindex?: boolean }) {
+  useSeo(meta, { noindex });
+  const [demoOpen, setDemoOpen] = useState(false);
+  const openDemo = () => setDemoOpen(true);
+  // Every page's hero (.sx-hero) takes the event's background.
+  const hero = useEventHeroProps(useLiveEvent()?.theme.pages);
+  return (
+    <div className={`lp sx-page ${className}${hero.className}`} style={hero.style}>
+      <SiteHeader onBookDemo={openDemo} />
+      {demoOpen && <DemoModal onClose={() => setDemoOpen(false)} />}
+      <main className="sx-main">{children(openDemo)}</main>
+      <SiteFooter />
+      <WhatsAppFloat />
+    </div>
+  );
+}
+
+/** The green hero at the top of a content page. */
+export function PageHero({
+  eyebrow, title, sub, children, align = 'center',
+}: { eyebrow?: string; title: ReactNode; sub?: ReactNode; children?: ReactNode; align?: 'center' | 'left' }) {
+  return (
+    <section className={`sx-hero ${align}`}>
+      <div className="sx-wrap">
+        {eyebrow && <div className="sx-eyebrow">{eyebrow}</div>}
+        <h1 className="sx-h1">{title}</h1>
+        {sub && <p className="sx-lead">{sub}</p>}
+        {children && <div className="sx-hero-actions">{children}</div>}
+      </div>
+    </section>
+  );
+}
+
+/** "Start free trial" + "Book a demo", used under most heroes and at page ends. */
+export function CtaButtons({ onDemo, light = false }: { onDemo: () => void; light?: boolean }) {
+  return (
+    <div className="sx-cta-row">
+      <a className={`sx-btn primary${light ? ' on-dark' : ''}`} href="/#/register">Start 7-day free trial <span aria-hidden="true">→</span></a>
+      <button type="button" className={`sx-btn secondary${light ? ' on-dark' : ''}`} onClick={onDemo}>Book a demo</button>
+    </div>
+  );
+}
+
+export function CtaBand({ onDemo, title = 'Grow your business on WhatsApp', sub = 'Every plan starts with a 7-day free trial of every feature. No card needed.' }: { onDemo: () => void; title?: string; sub?: string }) {
+  return (
+    <section className="sx-cta-band">
+      <div className="sx-wrap">
+        <h2>{title}</h2>
+        <p>{sub}</p>
+        <CtaButtons onDemo={onDemo} light />
+      </div>
+    </section>
+  );
+}

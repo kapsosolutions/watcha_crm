@@ -1,0 +1,31 @@
+{
+  "name": "whatsapp-crm-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reusable WhatsApp-style CRM UI (React + Vite + TypeScript)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.node.json && vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.node.json"
+  },
+  "dependencies": {
+    "@types/qrcode": "1.5.6",
+    "lenis": "^1.3.27",
+    "qrcode": "1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "reactflow": "^11.11.4",
+    "socket.io-client": "^4.8.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@emoji-mart/data": "^1.2.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
